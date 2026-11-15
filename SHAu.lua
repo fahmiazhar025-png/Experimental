@@ -66,7 +66,7 @@ local antiAfkConn = nil
 -- Auto-Teleport (state)
 local TP = {
     points = {}, seq = {}, counter = 0,
-    useTween = false, pickMode = false, busy = false,
+    posMode = "tp", pickMode = false, busy = false,
     farmActive = false, farmThread = nil, manualThread = nil,
     tween = nil, delThread = nil, onRespawn = nil,
 }
@@ -1547,6 +1547,10 @@ do
         return l
     end
 
+    local function Fmt(n)
+        return string.format("%g", n)
+    end
+
     -- Wadah tab
     TabTeleportContainer = Instance.new("Frame")
     TabTeleportContainer.Parent = TabContentWrapper
@@ -1592,13 +1596,126 @@ do
         return card
     end
 
-    local function NewRow(card, order, height)
+    local function NewRow(parent, order, height)
         local row = Instance.new("Frame")
-        row.Parent = card
+        row.Parent = parent
         row.Size = UDim2.new(1, 0, 0, height)
         row.BackgroundTransparency = 1
         row.LayoutOrder = order
         return row
+    end
+
+    local RefreshGroups   -- diisi setelah kedua panel "Set All" dibuat
+
+    -- ==================================================
+    -- PANEL "SET ALL" (dipakai kartu Global & kartu Auto Farm)
+    -- o.getTargets : daftar slot yang dipengaruhi
+    -- Nilai berbeda antar-slot -> kolom dikosongkan (placeholder "beda"),
+    -- kedua tombol Set All abu-abu, dan teks info menulis "Campur: ..."
+    -- ==================================================
+    local function Uniform(list, field)
+        local first = list[1][field]
+        for i = 2, #list do
+            if list[i][field] ~= first then return nil end
+        end
+        return first
+    end
+
+    local function MakeGroup(card, o)
+        local g = {}
+
+        if o.orderDelay then
+            local rowD = NewRow(card, o.orderDelay, 22)
+            MakeLabel(rowD, "Delay semua:", UDim2.new(0.40, 0, 1, 0))
+            g.delayBox = MakeBox(rowD, "beda", "", UDim2.new(0.30, 0, 1, 0), UDim2.new(0.42, 0, 0, 0))
+        end
+
+        local rowSet = NewRow(card, o.orderSet, 26)
+        g.tpBtn = MakeButton(rowSet, "Set All Teleport", BTN_GRAY, UDim2.new(0.48, 0, 1, 0))
+        g.walkBtn = MakeButton(rowSet, "Set All Jalan + Noclip", BTN_GRAY, UDim2.new(0.50, 0, 1, 0), UDim2.new(0.50, 0, 0, 0))
+
+        local rowInfo = NewRow(card, o.orderInfo, 14)
+        g.info = MakeLabel(rowInfo, "", UDim2.new(1, 0, 1, 0), nil, 9)
+        g.info.Font = Enum.Font.Gotham
+
+        g.speedRow = NewRow(card, o.orderSpeed, 22)
+        MakeLabel(g.speedRow, "Kec:", UDim2.new(0.12, 0, 1, 0))
+        g.speedBox = MakeBox(g.speedRow, "beda", "30", UDim2.new(0.28, 0, 1, 0), UDim2.new(0.13, 0, 0, 0))
+        MakeLabel(g.speedRow, "Tinggi:", UDim2.new(0.16, 0, 1, 0), UDim2.new(0.46, 0, 0, 0))
+        g.heightBox = MakeBox(g.speedRow, "beda", "12", UDim2.new(0.28, 0, 1, 0), UDim2.new(0.63, 0, 0, 0))
+        g.speedRow.Visible = false
+
+        g.refresh = function()
+            local targets = o.getTargets()
+            local n = #targets
+            local walkT = {}
+            for _, t in ipairs(targets) do
+                if t.mode == "walk" then table.insert(walkT, t) end
+            end
+            local nWalk = #walkT
+            local nTP = n - nWalk
+
+            g.tpBtn.BackgroundColor3 = (n > 0 and nWalk == 0) and BTN_ORANGE or BTN_GRAY
+            g.walkBtn.BackgroundColor3 = (n > 0 and nTP == 0) and BTN_BLUE or BTN_GRAY
+            if n == 0 then
+                g.info.Text = o.emptyText
+            elseif nWalk == 0 then
+                g.info.Text = "Semua slot: Teleport (" .. n .. ")"
+            elseif nTP == 0 then
+                g.info.Text = "Semua slot: Jalan + Noclip (" .. n .. ")"
+            else
+                g.info.Text = "Campur: " .. nTP .. " Teleport, " .. nWalk .. " Jalan + Noclip"
+            end
+
+            if g.delayBox and n > 0 then
+                local d = Uniform(targets, "delay")
+                g.delayBox.Text = d and Fmt(d) or ""
+            end
+
+            g.speedRow.Visible = nWalk > 0 or (o.forceSpeed ~= nil and o.forceSpeed())
+            if nWalk > 0 then
+                local sv = Uniform(walkT, "speed")
+                local hv = Uniform(walkT, "height")
+                g.speedBox.Text = sv and Fmt(sv) or ""
+                g.heightBox.Text = hv and Fmt(hv) or ""
+            end
+        end
+
+        local function SetAll(mode)
+            local targets = o.getTargets()
+            if #targets == 0 and o.flashEmpty then
+                g.info.Text = o.flashEmpty
+                task.delay(1.2, function() g.refresh() end)
+                return
+            end
+            for _, t in ipairs(targets) do
+                t.mode = mode
+                t.sync()
+            end
+            if o.onSet then o.onSet(mode) end
+            RefreshGroups()
+        end
+        g.tpBtn.MouseButton1Click:Connect(function() SetAll("tp") end)
+        g.walkBtn.MouseButton1Click:Connect(function() SetAll("walk") end)
+
+        local function ApplyBox(box, field, minv)
+            box.FocusLost:Connect(function()
+                local v = tonumber(box.Text)
+                if v then
+                    v = math.max(v, minv)
+                    for _, t in ipairs(o.getTargets()) do
+                        t[field] = v
+                        t.sync()
+                    end
+                end
+                RefreshGroups()
+            end)
+        end
+        if g.delayBox then ApplyBox(g.delayBox, "delay", 0.5) end
+        ApplyBox(g.speedBox, "speed", 1)
+        ApplyBox(g.heightBox, "height", -math.huge)
+
+        return g
     end
 
     -- ===== Kartu 1: Posisi & Teleport =====
@@ -1609,33 +1726,50 @@ do
     local PosBox = MakeBox(RowPos, "X, Y, Z (pisah koma)", "", UDim2.new(0.62, 0, 1, 0))
     local GoPosBtn = MakeButton(RowPos, "TELEPORT", BTN_ORANGE, UDim2.new(0.36, 0, 1, 0), UDim2.new(0.64, 0, 0, 0))
 
-    -- ===== Kartu 2: Cara Perpindahan =====
-    local CardMove = NewCard(2, "🚶 CARA PERPINDAHAN")
-    local RowMode = NewRow(CardMove, 1, 26)
-    local ModeBtn = MakeButton(RowMode, "⚡ TELEPORT LANGSUNG", BTN_ORANGE, UDim2.new(0.62, 0, 1, 0))
-    local StopMoveBtn = MakeButton(RowMode, "⏹ BERHENTI", BTN_GRAY, UDim2.new(0.36, 0, 1, 0), UDim2.new(0.64, 0, 0, 0))
-    local RowSpeed = NewRow(CardMove, 2, 22)
-    MakeLabel(RowSpeed, "Kec:", UDim2.new(0.12, 0, 1, 0))
-    local SpeedBox = MakeBox(RowSpeed, "30", "30", UDim2.new(0.30, 0, 1, 0), UDim2.new(0.13, 0, 0, 0))
-    MakeLabel(RowSpeed, "Tinggi:", UDim2.new(0.16, 0, 1, 0), UDim2.new(0.50, 0, 0, 0))
-    local HeightBox = MakeBox(RowSpeed, "12", "12", UDim2.new(0.30, 0, 1, 0), UDim2.new(0.68, 0, 0, 0))
+    local function PosBtnText()
+        GoPosBtn.Text = (TP.posMode == "walk") and "JALAN KE SINI" or "TELEPORT"
+        GoPosBtn.BackgroundColor3 = (TP.posMode == "walk") and BTN_BLUE or BTN_ORANGE
+    end
 
-    -- ===== Kartu 3: Titik Tersimpan =====
+    -- ===== Kartu 2: Cara Perpindahan (GLOBAL: semua slot sekaligus) =====
+    local CardMove = NewCard(2, "🚶 CARA PERPINDAHAN (GLOBAL)")
+    local globalGroup = MakeGroup(CardMove, {
+        orderSet = 1, orderInfo = 2, orderSpeed = 3,
+        getTargets = function() return TP.points end,
+        emptyText = "Belum ada slot tersimpan",
+        forceSpeed = function() return TP.posMode == "walk" end,
+        onSet = function(mode)            -- tombol "Teleport ke posisi input" mengikuti pilihan terakhir
+            TP.posMode = mode
+            PosBtnText()
+        end,
+    })
+    local RowStop = NewRow(CardMove, 4, 24)
+    local StopMoveBtn = MakeButton(RowStop, "⏹ BERHENTI", BTN_GRAY, UDim2.new(1, 0, 1, 0))
+
+    -- ===== Kartu 3: Titik Tersimpan (slot) =====
     local CardPoints = NewCard(3, "📋 TITIK TERSIMPAN")
     local RowAdd = NewRow(CardPoints, 1, 24)
     local AddPointBtn = MakeButton(RowAdd, "➕ SIMPAN POSISI SEKARANG", BTN_GREEN, UDim2.new(1, 0, 1, 0))
     local RowDel = NewRow(CardPoints, 9999, 24)
     local DelAllBtn = MakeButton(RowDel, "🗑 HAPUS SEMUA TITIK", BTN_RED, UDim2.new(1, 0, 1, 0))
 
-    -- ===== Kartu 4: Auto Farm Berantai =====
+    -- ===== Kartu 4: Auto Farm Berantai (hanya slot terpilih) =====
     local CardFarm = NewCard(4, "🔁 AUTO FARM BERANTAI")
     local RowPick = NewRow(CardFarm, 1, 24)
     local PickBtn = MakeButton(RowPick, "📝 PILIH URUTAN TITIK", BTN_BLUE, UDim2.new(1, 0, 1, 0))
-    local RowJeda = NewRow(CardFarm, 2, 22)
-    MakeLabel(RowJeda, "Jeda (detik):", UDim2.new(0.40, 0, 1, 0))
-    local JedaBox = MakeBox(RowJeda, "3", "3", UDim2.new(0.30, 0, 1, 0), UDim2.new(0.42, 0, 0, 0))
-    local RowFarm = NewRow(CardFarm, 3, 26)
+    local farmGroup = MakeGroup(CardFarm, {
+        orderDelay = 2, orderSet = 3, orderInfo = 4, orderSpeed = 5,
+        getTargets = function() return TP.seq end,
+        emptyText = "Belum ada slot dipilih",
+        flashEmpty = "Pilih titik dulu (Pilih Urutan Titik)",
+    })
+    local RowFarm = NewRow(CardFarm, 6, 26)
     local FarmBtn = MakeButton(RowFarm, "▶ MULAI AUTO FARM", BTN_GREEN, UDim2.new(1, 0, 1, 0), nil, 10)
+
+    RefreshGroups = function()
+        globalGroup.refresh()
+        farmGroup.refresh()
+    end
 
     -- ===== Noclip: memakai pengelola bersama =====
     local function SetNoclip(on)
@@ -1662,12 +1796,13 @@ do
     end
 
     -- Perpindahan (menunggu sampai selesai; false jika dibatalkan / karakter hilang)
-    local function MoveTo(targetCF)
+    -- mode: "tp" = teleport langsung, "walk" = Jalan + Noclip
+    local function MoveTo(targetCF, mode, speed, lift)
         local root = GetHumanoidRootPart()
         if not root then return false end
         SetBusy(true)
 
-        if not TP.useTween then
+        if mode ~= "walk" then
             SetNoclip(false)
             root.CFrame = targetCF
             root.AssemblyLinearVelocity = Vector3.zero
@@ -1675,8 +1810,8 @@ do
             return true
         end
 
-        local speed = math.max(1, tonumber(SpeedBox.Text) or 30)
-        local lift = tonumber(HeightBox.Text) or 12
+        speed = math.max(1, speed or 30)
+        lift = lift or 12
         SetNoclip(true)
 
         local dist = (root.Position - targetCF.Position).Magnitude
@@ -1726,15 +1861,15 @@ do
         SetBusy(false)
     end
 
-    local function RunManual(cf)
+    local function RunManual(cf, mode, speed, lift)
         StopTeleport()   -- perintah manual menggantikan gerakan sebelumnya
         TP.manualThread = task.spawn(function()
-            MoveTo(cf)
+            MoveTo(cf, mode, speed, lift)
             TP.manualThread = nil
         end)
     end
 
-    -- Tanda urutan (+ / 1 / 2 / 3 ...) di tiap titik
+    -- Tanda urutan (+ / 1 / 2 / 3 ...) di tiap slot, lalu susun ulang baris & panel Set All
     local function RefreshSeq()
         for _, pt in ipairs(TP.points) do
             local idx = table.find(TP.seq, pt)
@@ -1746,33 +1881,108 @@ do
                 pt.seqBtn.Text = "+"
                 pt.seqBtn.BackgroundColor3 = BTN_ORANGE
             end
+            pt.arrange()
         end
+        RefreshGroups()
     end
 
     local function AddPoint(cf)
         TP.counter += 1
-        local pt = {id = TP.counter, name = "Titik " .. TP.counter, cframe = cf}
+        local pt = {
+            id = TP.counter, name = "Titik " .. TP.counter, cframe = cf,
+            mode = "tp", delay = 3, speed = 30, height = 12,
+        }
         table.insert(TP.points, pt)
 
+        -- Baris slot: tinggi otomatis mengikuti isi (TP: 2 baris, Jalan + Noclip: 3 baris)
         local row = Instance.new("Frame")
         row.Name = "Point_" .. pt.id
         row.Parent = CardPoints
-        row.Size = UDim2.new(1, 0, 0, 28)
+        row.Size = UDim2.new(1, 0, 0, 0)
+        row.AutomaticSize = Enum.AutomaticSize.Y
         row.BackgroundColor3 = SLOT_HEADER
         row.LayoutOrder = 10 + pt.id
         Corner(row, 5)
+        local pad = Instance.new("UIPadding")
+        pad.PaddingTop = UDim.new(0, 3)
+        pad.PaddingBottom = UDim.new(0, 4)
+        pad.PaddingLeft = UDim.new(0, 3)
+        pad.PaddingRight = UDim.new(0, 3)
+        pad.Parent = row
+        local list = Instance.new("UIListLayout")
+        list.Padding = UDim.new(0, 3)
+        list.SortOrder = Enum.SortOrder.LayoutOrder
+        list.Parent = row
         pt.row = row
 
-        local seqBtn = MakeButton(row, "+", BTN_ORANGE, UDim2.new(0, 22, 0, 22), UDim2.new(0, 4, 0.5, -11), 11)
+        -- Baris 1: [Urutan] | TP / Jalan + Noclip | Nama Slot | GO | X
+        local line1 = NewRow(row, 1, 26)
+        local seqBtn = MakeButton(line1, "+", BTN_ORANGE, UDim2.new(0, 22, 0, 22), UDim2.new(0, 0, 0.5, -11), 11)
         seqBtn.Visible = false
+        local modeBtn = MakeButton(line1, "TP", BTN_ORANGE, UDim2.new(0, 84, 0, 22), UDim2.new(0, 0, 0.5, -11), 8)
+        local nameBox = MakeBox(line1, "Nama slot", pt.name, UDim2.new(1, -150, 0, 22), UDim2.new(0, 88, 0.5, -11))
+        local goBtn = MakeButton(line1, "GO", BTN_TEAL, UDim2.new(0, 34, 0, 22), UDim2.new(1, -60, 0.5, -11), 10)
+        local delBtn = MakeButton(line1, "X", Color3.fromRGB(214, 70, 70), UDim2.new(0, 22, 0, 22), UDim2.new(1, -22, 0.5, -11), 10)
         pt.seqBtn = seqBtn
 
-        local nameBox = MakeBox(row, "Nama titik", pt.name, UDim2.new(1, -100, 0, 22), UDim2.new(0, 30, 0.5, -11))
-        local goBtn = MakeButton(row, "GO", BTN_TEAL, UDim2.new(0, 34, 0, 22), UDim2.new(1, -66, 0.5, -11), 10)
-        local delBtn = MakeButton(row, "X", Color3.fromRGB(214, 70, 70), UDim2.new(0, 22, 0, 22), UDim2.new(1, -26, 0.5, -11), 10)
+        -- Tombol urutan hanya makan tempat saat terlihat (tidak ada celah kosong)
+        pt.arrange = function()
+            local x = 0
+            if seqBtn.Visible then x = 26 end
+            modeBtn.Position = UDim2.new(0, x, 0.5, -11)
+            x += 88
+            nameBox.Position = UDim2.new(0, x, 0.5, -11)
+            nameBox.Size = UDim2.new(1, -(x + 64), 0, 22)
+        end
+
+        -- Baris 2: Delay
+        local line2 = NewRow(row, 2, 22)
+        MakeLabel(line2, "Delay:", UDim2.new(0.16, 0, 1, 0))
+        local delayBox = MakeBox(line2, "3", "", UDim2.new(0.25, 0, 1, 0), UDim2.new(0.17, 0, 0, 0))
+
+        -- Baris 3: Kec & Tinggi (hanya jika Jalan + Noclip)
+        local line3 = NewRow(row, 3, 22)
+        MakeLabel(line3, "Kec:", UDim2.new(0.12, 0, 1, 0))
+        local speedBox = MakeBox(line3, "30", "", UDim2.new(0.25, 0, 1, 0), UDim2.new(0.13, 0, 0, 0))
+        MakeLabel(line3, "Tinggi:", UDim2.new(0.16, 0, 1, 0), UDim2.new(0.44, 0, 0, 0))
+        local heightBox = MakeBox(line3, "12", "", UDim2.new(0.25, 0, 1, 0), UDim2.new(0.61, 0, 0, 0))
+        line3.Visible = false
+
+        pt.sync = function()
+            if pt.mode == "walk" then
+                modeBtn.Text = "Jalan + Noclip"
+                modeBtn.BackgroundColor3 = BTN_BLUE
+                line3.Visible = true
+            else
+                modeBtn.Text = "TP"
+                modeBtn.BackgroundColor3 = BTN_ORANGE
+                line3.Visible = false
+            end
+            delayBox.Text = Fmt(pt.delay)
+            speedBox.Text = Fmt(pt.speed)
+            heightBox.Text = Fmt(pt.height)
+        end
+
+        local function BindBox(box, field, minv)
+            box.FocusLost:Connect(function()
+                local v = tonumber(box.Text)
+                if v then pt[field] = math.max(v, minv) end
+                box.Text = Fmt(pt[field])
+                RefreshGroups()
+            end)
+        end
+        BindBox(delayBox, "delay", 0.5)
+        BindBox(speedBox, "speed", 1)
+        BindBox(heightBox, "height", -math.huge)
 
         nameBox.FocusLost:Connect(function()
             pt.name = nameBox.Text
+        end)
+
+        modeBtn.MouseButton1Click:Connect(function()
+            pt.mode = (pt.mode == "walk") and "tp" or "walk"
+            pt.sync()
+            RefreshGroups()
         end)
 
         seqBtn.MouseButton1Click:Connect(function()
@@ -1787,7 +1997,7 @@ do
         end)
 
         goBtn.MouseButton1Click:Connect(function()
-            RunManual(pt.cframe)
+            RunManual(pt.cframe, pt.mode, pt.speed, pt.height)
         end)
 
         delBtn.MouseButton1Click:Connect(function()
@@ -1799,6 +2009,8 @@ do
             RefreshSeq()
         end)
 
+        pt.sync()
+        pt.arrange()
         RefreshSeq()
     end
 
@@ -1811,7 +2023,7 @@ do
         RefreshSeq()
     end
 
-    -- Auto Farm berantai: titik-titik urutan dikunjungi berulang
+    -- Auto Farm berantai: slot terpilih dikunjungi berulang, memakai mode/delay/kec/tinggi masing-masing
     local function ToggleFarm()
         if TP.farmActive then
             StopTeleport()
@@ -1832,9 +2044,8 @@ do
                 if #seq == 0 then break end
                 for _, pt in ipairs(seq) do
                     if not TP.farmActive or hubDestroyed then break end
-                    MoveTo(pt.cframe)
-                    local jeda = math.max(0.5, tonumber(JedaBox.Text) or 3)
-                    task.wait(jeda)
+                    MoveTo(pt.cframe, pt.mode, pt.speed, pt.height)
+                    task.wait(math.max(0.5, pt.delay))
                 end
             end
             TP.farmActive = false
@@ -1880,22 +2091,12 @@ do
         end
         if #nums < 3 then
             GoPosBtn.Text = "⚠ X,Y,Z?"
-            task.delay(1.2, function() GoPosBtn.Text = "TELEPORT" end)
+            task.delay(1.2, PosBtnText)
             return
         end
-        RunManual(CFrame.new(nums[1], nums[2], nums[3]))
-    end)
-
-    ModeBtn.MouseButton1Click:Connect(function()
-        TP.useTween = not TP.useTween
-        if TP.useTween then
-            ModeBtn.Text = "🚶 JALAN + NOCLIP"
-            ModeBtn.BackgroundColor3 = BTN_BLUE
-        else
-            SetNoclip(false)
-            ModeBtn.Text = "⚡ TELEPORT LANGSUNG"
-            ModeBtn.BackgroundColor3 = BTN_ORANGE
-        end
+        local spd = tonumber(globalGroup.speedBox.Text) or 30
+        local lft = tonumber(globalGroup.heightBox.Text) or 12
+        RunManual(CFrame.new(nums[1], nums[2], nums[3]), TP.posMode, spd, lft)
     end)
 
     StopMoveBtn.MouseButton1Click:Connect(function()
@@ -1951,6 +2152,9 @@ do
     end)
 
     FarmBtn.MouseButton1Click:Connect(ToggleFarm)
+
+    PosBtnText()
+    RefreshGroups()
 end
 
 -- ========== GLOBAL CONTROL REMOTE ==========
