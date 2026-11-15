@@ -61,6 +61,7 @@ local hubDestroyed = false
 local hubMinimized = false
 local hubLocked = false
 local globalConns = {}
+local cleanups = {}   -- fungsi pembersih tambahan yang dipanggil saat Shutdown
 local antiAfkConn = nil
 
 -- Auto-Teleport (state)
@@ -195,18 +196,91 @@ local function PlayAndWait(tween, duration)
     return finished and result == Enum.PlaybackState.Completed
 end
 
+-- ========== FORMAT PATH ==========
+-- Seg1.Seg2.Seg3 dimulai dari service (Workspace, ReplicatedStorage, ...).
+--   titik di dalam nama ditulis \.   |   backslash ditulis \\
+--   beberapa anak dengan nama sama: Nama[2] = anak ke-2 yang bernama "Nama"
+-- Path lama yang sederhana (Workspace.Folder.Part) tetap bekerja seperti biasa.
+local function SplitPath(pathStr)
+    local segs, cur = {}, {}
+    local i, n = 1, #pathStr
+    while i <= n do
+        local ch = pathStr:sub(i, i)
+        if ch == "\\" and i < n then
+            table.insert(cur, pathStr:sub(i + 1, i + 1))
+            i += 2
+        elseif ch == "." then
+            table.insert(segs, table.concat(cur))
+            cur = {}
+            i += 1
+        else
+            table.insert(cur, ch)
+            i += 1
+        end
+    end
+    table.insert(segs, table.concat(cur))
+    return segs
+end
+
 local function ResolveSafePath(pathStr)
     if not pathStr or pathStr == "" then return nil end
-    local parts = string.split(pathStr, ".")
     local current = game
-    for _, seg in ipairs(parts) do
-        if not current then return nil end
-        current = current:FindFirstChild(seg)
+    for _, seg in ipairs(SplitPath(pathStr)) do
+        if not current or seg == "" then return nil end
+        local name, idx = seg, nil
+        local base, num = seg:match("^(.*)%[(%d+)%]$")
+        if base then
+            name, idx = base, tonumber(num)
+        end
+        if idx then
+            local found, count = nil, 0
+            for _, child in ipairs(current:GetChildren()) do
+                if child.Name == name then
+                    count += 1
+                    if count == idx then
+                        found = child
+                        break
+                    end
+                end
+            end
+            current = found
+        else
+            current = current:FindFirstChild(name)
+        end
     end
     if not current or not current:IsDescendantOf(game) then
         return nil
     end
     return current
+end
+
+-- Kebalikannya: objek -> path (selalu bisa dibaca balik oleh ResolveSafePath)
+local PathTool = {}
+PathTool.Of = function(obj)
+    if not obj or obj == game or not obj:IsDescendantOf(game) then return nil end
+    local parts = {}
+    local node = obj
+    while node and node ~= game do
+        local name = node.Name
+        local parent = node.Parent
+        local idx = nil
+        if parent then
+            local count, pos = 0, nil
+            for _, child in ipairs(parent:GetChildren()) do
+                if child.Name == name then
+                    count += 1
+                    if child == node then pos = count end
+                end
+            end
+            -- nomor urut dipakai bila nama ganda, atau bila nama sendiri berakhiran [angka]
+            if count > 1 or name:match("%[%d+%]$") then idx = pos end
+        end
+        local esc = name:gsub("\\", "\\\\"):gsub("%.", "\\.")
+        if idx then esc = esc .. "[" .. idx .. "]" end
+        table.insert(parts, 1, esc)
+        node = parent
+    end
+    return table.concat(parts, ".")
 end
 
 local function GetTargetPosition(targetObj)
@@ -1090,7 +1164,7 @@ do
     Holder.Parent = CollectScrollFrame
     Holder.Size = UDim2.new(1, -12, 0, 34)
     Holder.BackgroundTransparency = 1
-    Holder.LayoutOrder = -2
+    Holder.LayoutOrder = -3
 
     local DexBtn = Instance.new("TextButton")
     DexBtn.Parent = Holder
@@ -1127,6 +1201,257 @@ do
             DexBtn.Text = "🔎 DEX++ (Explorer)"
             busy = false
         end)
+    end)
+end
+
+-- ===== SELECT OBJECT (di bawah Dex++): ketuk objek di game -> tampil path & isinya =====
+-- Tidak perlu membuka Dex++. Path yang dihasilkan selalu diuji balik (path -> objek) sebelum ditampilkan.
+-- Anti kebocoran: koneksi input HANYA ada selama toggle ON, satu SelectionBox saja, dibersihkan saat Shutdown.
+do
+    local CARD_H = 156
+    local Card = Instance.new("Frame")
+    Card.Parent = CollectScrollFrame
+    Card.Size = UDim2.new(1, -12, 0, CARD_H)
+    Card.BackgroundColor3 = HEADER_BG
+    Card.LayoutOrder = -2
+    local cc = Instance.new("UICorner")
+    cc.CornerRadius = UDim.new(0, 7)
+    cc.Parent = Card
+
+    local Sel = {obj = nil, path = nil, conns = {}, box = nil, down = nil, downPos = nil, downTime = 0}
+
+    -- Info objek
+    local InfoPanel = Instance.new("Frame")
+    InfoPanel.Parent = Card
+    InfoPanel.Size = UDim2.new(1, -8, 0, CARD_H - 62)
+    InfoPanel.Position = UDim2.new(0, 4, 0, 58)
+    InfoPanel.BackgroundColor3 = INPUT_BG
+    InfoPanel.ClipsDescendants = true
+    local ci = Instance.new("UICorner")
+    ci.CornerRadius = UDim.new(0, 5)
+    ci.Parent = InfoPanel
+
+    local InfoLbl = Instance.new("TextLabel")
+    InfoLbl.Parent = InfoPanel
+    InfoLbl.Size = UDim2.new(1, -8, 1, -6)
+    InfoLbl.Position = UDim2.new(0, 4, 0, 3)
+    InfoLbl.BackgroundTransparency = 1
+    InfoLbl.Text = "Aktifkan Select Object, lalu ketuk objek di game."
+    InfoLbl.TextColor3 = TEXT_DARK
+    InfoLbl.Font = Enum.Font.Gotham
+    InfoLbl.TextSize = 9
+    InfoLbl.TextWrapped = true
+    InfoLbl.TextXAlignment = Enum.TextXAlignment.Left
+    InfoLbl.TextYAlignment = Enum.TextYAlignment.Top
+
+    local function SetInfo(text)
+        InfoLbl.Text = text
+    end
+
+    local function Short(inst)
+        return inst.Name .. " (" .. inst.ClassName .. ")"
+    end
+
+    -- Susun keterangan lengkap objek: path, kelas, posisi, induk, isi, dan hasil uji path
+    local function Describe(inst)
+        local path = PathTool.Of(inst)
+        Sel.path = path
+        if not path then
+            return "Objek sudah tidak ada di game."
+        end
+        local L = {}
+        table.insert(L, "Path: " .. path)
+        table.insert(L, "Nama: " .. inst.Name .. "  |  Class: " .. inst.ClassName)
+
+        if inst:IsA("BasePart") then
+            local p, sz = inst.Position, inst.Size
+            table.insert(L, string.format("Pos: %.1f, %.1f, %.1f  |  Ukuran: %.1f x %.1f x %.1f", p.X, p.Y, p.Z, sz.X, sz.Y, sz.Z))
+        elseif inst:IsA("Model") and inst ~= workspace then
+            local p = inst:GetPivot().Position
+            table.insert(L, string.format("Pos (pivot): %.1f, %.1f, %.1f", p.X, p.Y, p.Z))
+        end
+
+        local parent = inst.Parent
+        if parent and parent ~= game then
+            table.insert(L, "Induk: " .. Short(parent))
+        end
+
+        local kids = inst:GetChildren()
+        if #kids == 0 then
+            table.insert(L, "Isi: (kosong)")
+        else
+            local names = {}
+            for i = 1, math.min(6, #kids) do
+                table.insert(names, Short(kids[i]))
+            end
+            local extra = (#kids > 6) and (" +" .. (#kids - 6) .. " lagi") or ""
+            table.insert(L, "Isi (" .. #kids .. "): " .. table.concat(names, ", ") .. extra)
+        end
+
+        if ResolveSafePath(path) == inst then
+            local note = path:find("%[%d+%]") and "  (nama ganda -> pakai [n])" or ""
+            table.insert(L, "Validasi: ✅ path cocok dengan objek" .. note)
+        else
+            table.insert(L, "Validasi: ⚠ path tidak kembali ke objek ini")
+        end
+        return table.concat(L, "\n")
+    end
+
+    -- Penanda objek terpilih (satu SelectionBox, dipakai ulang)
+    local function UpdateBox(inst)
+        if not Sel.box then
+            local b = Instance.new("SelectionBox")
+            b.Name = "SelectObjBox"
+            b.Color3 = Color3.fromRGB(80, 200, 255)
+            b.LineThickness = 0.05
+            b.SurfaceColor3 = Color3.fromRGB(80, 200, 255)
+            b.SurfaceTransparency = 0.8
+            b.Parent = ScreenGui
+            Sel.box = b
+        end
+        local skip = (inst == workspace) or inst:IsA("Terrain")   -- terlalu besar untuk digambar
+        Sel.box.Adornee = skip and nil or inst
+    end
+
+    local function Select(inst)
+        Sel.obj = inst
+        SetInfo(Describe(inst))
+        UpdateBox(inst)
+    end
+
+    local function PickAt(pos)
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+        local ray = cam:ScreenPointToRay(pos.X, pos.Y)
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        if LocalPlayer.Character then
+            params.FilterDescendantsInstances = {LocalPlayer.Character}
+        end
+        local res = workspace:Raycast(ray.Origin, ray.Direction * 5000, params)
+        if not res or not res.Instance then
+            SetInfo("Tidak ada objek di titik itu (langit / terlalu jauh).")
+            return
+        end
+        Select(res.Instance)
+    end
+
+    local function StopSelect()
+        for _, c in ipairs(Sel.conns) do
+            c:Disconnect()
+        end
+        table.clear(Sel.conns)
+        Sel.down, Sel.downPos = nil, nil
+        if Sel.box then
+            Sel.box:Destroy()
+            Sel.box = nil
+        end
+    end
+
+    -- Hanya "ketukan" yang dihitung (geser kamera / tahan lama tidak memilih)
+    local function StartSelect()
+        if #Sel.conns > 0 then return end
+        table.insert(Sel.conns, UserInputService.InputBegan:Connect(function(input, processed)
+            if processed then return end   -- ketukan di GUI (termasuk hub ini) diabaikan
+            local t = input.UserInputType
+            if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+                Sel.down = input
+                Sel.downPos = input.Position
+                Sel.downTime = os.clock()
+            end
+        end))
+        table.insert(Sel.conns, UserInputService.InputEnded:Connect(function(input)
+            if Sel.down ~= input then return end
+            Sel.down = nil
+            if (input.Position - Sel.downPos).Magnitude > 12 or os.clock() - Sel.downTime > 0.5 then return end
+            PickAt(input.Position)
+        end))
+    end
+
+    ESP.MakeToggle(Card, "Select Object (ketuk objek di game)", UDim2.new(1, -8, 0, 22), UDim2.new(0, 4, 0, 4), function(on)
+        if on then
+            StartSelect()
+            SetInfo("Mode pilih aktif: ketuk sebuah objek di game.\n(Menggeser layar untuk kamera tidak memilih apa pun.)")
+        else
+            StopSelect()
+        end
+    end)
+
+    local CopyBtn = Instance.new("TextButton")
+    CopyBtn.Parent = Card
+    CopyBtn.Size = UDim2.new(0.64, -8, 0, 24)
+    CopyBtn.Position = UDim2.new(0, 4, 0, 30)
+    CopyBtn.BackgroundColor3 = BTN_TEAL
+    CopyBtn.Text = "📋 COPY PATH"
+    CopyBtn.TextColor3 = Color3.new(1, 1, 1)
+    CopyBtn.Font = Enum.Font.GothamBold
+    CopyBtn.TextSize = 10
+    CopyBtn.AutoLocalize = false
+    CopyBtn.AutoButtonColor = false
+    local c1 = Instance.new("UICorner")
+    c1.CornerRadius = UDim.new(0, 5)
+    c1.Parent = CopyBtn
+
+    local UpBtn = Instance.new("TextButton")
+    UpBtn.Parent = Card
+    UpBtn.Size = UDim2.new(0.36, -4, 0, 24)
+    UpBtn.Position = UDim2.new(0.64, 0, 0, 30)
+    UpBtn.BackgroundColor3 = BTN_BLUE
+    UpBtn.Text = "↑ INDUK"
+    UpBtn.TextColor3 = Color3.new(1, 1, 1)
+    UpBtn.Font = Enum.Font.GothamBold
+    UpBtn.TextSize = 10
+    UpBtn.AutoLocalize = false
+    UpBtn.AutoButtonColor = false
+    local c2 = Instance.new("UICorner")
+    c2.CornerRadius = UDim.new(0, 5)
+    c2.Parent = UpBtn
+
+    local flashToken = 0
+    local function Flash(btn, text, restore)
+        flashToken += 1
+        local my = flashToken
+        btn.Text = text
+        task.delay(1.3, function()
+            if my == flashToken and btn.Parent then btn.Text = restore end
+        end)
+    end
+
+    CopyBtn.MouseButton1Click:Connect(function()
+        if not Sel.path then
+            Flash(CopyBtn, "⚠ Pilih objek dulu", "📋 COPY PATH")
+            return
+        end
+        local ok = pcall(function()
+            if not setclipboard then error("tanpa setclipboard") end
+            setclipboard(Sel.path)
+        end)
+        if ok then
+            Flash(CopyBtn, "✅ TERSALIN", "📋 COPY PATH")
+        else
+            print("[Select Object] Path: " .. Sel.path)
+            Flash(CopyBtn, "⚠ Tanpa clipboard (path di konsol)", "📋 COPY PATH")
+        end
+    end)
+
+    -- Naik ke induk (mis. dari Part ke Model-nya) -> path & isi ikut berubah
+    UpBtn.MouseButton1Click:Connect(function()
+        local obj = Sel.obj
+        if not obj or not obj:IsDescendantOf(game) then
+            Flash(UpBtn, "⚠ -", "↑ INDUK")
+            return
+        end
+        local parent = obj.Parent
+        if not parent or parent == game then
+            Flash(UpBtn, "Teratas", "↑ INDUK")
+            return
+        end
+        Select(parent)
+    end)
+
+    table.insert(cleanups, function()
+        StopSelect()
+        Sel.obj, Sel.path = nil, nil
     end)
 end
 
@@ -3136,6 +3461,7 @@ local function Shutdown()
     end
     pcall(NoclipReset)
     pcall(ESP.Clear)
+    for _, fn in ipairs(cleanups) do pcall(fn) end
     if TP.markThread then
         pcall(task.cancel, TP.markThread)
         TP.markThread = nil
