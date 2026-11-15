@@ -13,7 +13,7 @@ if env.ShrimpHubShutdown then
     env.ShrimpHubShutdown = nil
 end
 for _, gui in ipairs(LocalPlayer.PlayerGui:GetChildren()) do
-    if gui.Name == "Shrimp_Hub_Auto" or gui.Name == "Shrimp_Hub_Logo" or gui.Name == "Shrimp_Hub_ESP" then
+    if gui.Name == "Shrimp_Hub_Auto" or gui.Name == "Shrimp_Hub_Logo" or gui.Name == "Shrimp_Hub_ESP" or gui.Name == "Shrimp_Hub_Marks" then
         pcall(function() gui:Destroy() end)
     end
 end
@@ -67,6 +67,7 @@ local antiAfkConn = nil
 local TP = {
     points = {}, seq = {}, counter = 0,
     posMode = "tp", pickMode = false, busy = false,
+    boxMark = false, posName = false, markFolder = nil,
     farmActive = false, farmThread = nil, manualThread = nil,
     tween = nil, delThread = nil, onRespawn = nil,
 }
@@ -2321,6 +2322,105 @@ do
         return g
     end
 
+    -- ===== BOX MARK: tanda titik =====
+    -- Memakai HandleAdornment + BillboardGui (bukan Part di workspace) -> tidak ada collision sama sekali,
+    -- tidak menyentuh game, dan seluruhnya ada dalam satu Folder yang dihancurkan saat dimatikan / Shutdown.
+    local MARK_COLOR = Color3.fromRGB(150, 80, 230)
+
+    local function EnsureMarkFolder()
+        if TP.markFolder and TP.markFolder.Parent then return end
+        local f = Instance.new("Folder")
+        f.Name = "Shrimp_Hub_Marks"
+        f.Parent = LocalPlayer.PlayerGui
+        TP.markFolder = f
+    end
+
+    -- Nama titik di atas kotak (hanya jika Pos Name aktif)
+    local function UpdateMarkName(pt)
+        local m = pt.mark
+        if not m then return end
+        if TP.posName then
+            if not m.bb then
+                local base = workspace.Terrain
+                local bb = Instance.new("BillboardGui")
+                bb.Name = "PosName"
+                bb.Adornee = base
+                bb.AlwaysOnTop = true
+                bb.LightInfluence = 0
+                bb.Size = UDim2.fromOffset(180, 22)
+                bb.StudsOffsetWorldSpace = pt.markCF.Position + Vector3.new(0, pt.markSize.Y * 0.5 + 1.2, 0) - base.Position
+                local lbl = Instance.new("TextLabel")
+                lbl.Parent = bb
+                lbl.Size = UDim2.new(1, 0, 1, 0)
+                lbl.BackgroundTransparency = 1
+                lbl.TextColor3 = Color3.new(1, 1, 1)
+                lbl.TextStrokeColor3 = MARK_COLOR
+                lbl.TextStrokeTransparency = 0.2
+                lbl.Font = Enum.Font.GothamBold
+                lbl.TextSize = 13
+                bb.Parent = m.root
+                m.bb, m.lbl = bb, lbl
+            end
+            m.lbl.Text = pt.name
+        elseif m.bb then
+            m.bb:Destroy()
+            m.bb, m.lbl = nil, nil
+        end
+    end
+
+    local function BuildMark(pt)
+        if pt.mark then return end
+        EnsureMarkFolder()
+        local base = workspace.Terrain
+        local holder = Instance.new("Folder")
+        holder.Name = "Mark_" .. pt.id
+        holder.Parent = TP.markFolder
+
+        local box = Instance.new("BoxHandleAdornment")      -- kotak transparan setinggi player
+        box.Adornee = base
+        box.Size = pt.markSize
+        box.CFrame = base.CFrame:ToObjectSpace(pt.markCF)
+        box.Color3 = MARK_COLOR
+        box.Transparency = 0.65
+        box.AlwaysOnTop = true
+        box.ZIndex = 1
+        box.Parent = holder
+
+        local ball = Instance.new("SphereHandleAdornment")  -- lingkaran di tengah kotak
+        ball.Adornee = base
+        ball.Radius = 0.6
+        ball.CFrame = base.CFrame:ToObjectSpace(CFrame.new(pt.markCF.Position))
+        ball.Color3 = MARK_COLOR
+        ball.Transparency = 0.2
+        ball.AlwaysOnTop = true
+        ball.ZIndex = 2
+        ball.Parent = holder
+
+        pt.mark = {root = holder, bb = nil, lbl = nil}
+    end
+
+    local function DestroyMark(pt)
+        if pt.mark then
+            pcall(function() pt.mark.root:Destroy() end)
+            pt.mark = nil
+        end
+    end
+
+    local function RefreshMarks()
+        for _, pt in ipairs(TP.points) do
+            if TP.boxMark then
+                BuildMark(pt)
+                UpdateMarkName(pt)
+            else
+                DestroyMark(pt)
+            end
+        end
+        if not TP.boxMark and TP.markFolder then     -- mati -> folder ikut dibuang
+            TP.markFolder:Destroy()
+            TP.markFolder = nil
+        end
+    end
+
     -- ===== Kartu 1: Posisi & Teleport =====
     local CardPos = NewCard(1, "📍 POSISI & TELEPORT")
     local RowCopy = NewRow(CardPos, 1, 24)
@@ -2349,15 +2449,30 @@ do
     local RowStop = NewRow(CardMove, 4, 24)
     local StopMoveBtn = MakeButton(RowStop, "⏹ BERHENTI", BTN_GRAY, UDim2.new(1, 0, 1, 0))
 
+    -- ===== Kartu: Box Mark (di bawah Cara Perpindahan global) =====
+    local CardMark = NewCard(3, "🟪 BOX MARK (TANDA TITIK)")
+    local RowMark = NewRow(CardMark, 1, 22)
+    local posNameToggle
+    ESP.MakeToggle(RowMark, "Box Mark", UDim2.new(0.49, 0, 1, 0), UDim2.new(0, 0, 0, 0), function(on)
+        TP.boxMark = on
+        posNameToggle.btn.Visible = on          -- Pos Name hanya muncul saat Box Mark aktif
+        RefreshMarks()
+    end)
+    posNameToggle = ESP.MakeToggle(RowMark, "Pos Name", UDim2.new(0.49, 0, 1, 0), UDim2.new(0.51, 0, 0, 0), function(on)
+        TP.posName = on
+        RefreshMarks()
+    end)
+    posNameToggle.btn.Visible = false
+
     -- ===== Kartu 3: Titik Tersimpan (slot) =====
-    local CardPoints = NewCard(3, "📋 TITIK TERSIMPAN")
+    local CardPoints = NewCard(4, "📋 TITIK TERSIMPAN")
     local RowAdd = NewRow(CardPoints, 1, 24)
     local AddPointBtn = MakeButton(RowAdd, "➕ SIMPAN POSISI SEKARANG", BTN_GREEN, UDim2.new(1, 0, 1, 0))
     local RowDel = NewRow(CardPoints, 9999, 24)
     local DelAllBtn = MakeButton(RowDel, "🗑 HAPUS SEMUA TITIK", BTN_RED, UDim2.new(1, 0, 1, 0))
 
     -- ===== Kartu 4: Auto Farm Berantai (hanya slot terpilih) =====
-    local CardFarm = NewCard(4, "🔁 AUTO FARM BERANTAI")
+    local CardFarm = NewCard(5, "🔁 AUTO FARM BERANTAI")
     local RowPick = NewRow(CardFarm, 1, 24)
     local PickBtn = MakeButton(RowPick, "📝 PILIH URUTAN TITIK", BTN_BLUE, UDim2.new(1, 0, 1, 0))
     local farmGroup = MakeGroup(CardFarm, {
@@ -2497,6 +2612,25 @@ do
         }
         table.insert(TP.points, pt)
 
+        -- Data tanda: kotak setinggi karakter (pusat & tinggi diambil dari bounding box karakter saat disimpan)
+        do
+            local root = GetHumanoidRootPart()
+            local char = LocalPlayer.Character
+            local center, height = cf.Position, 5
+            if root and char then
+                local ok, bbCF, bbSize = pcall(function() return char:GetBoundingBox() end)
+                if ok and bbCF then
+                    center = (cf * root.CFrame:ToObjectSpace(bbCF)).Position
+                    height = bbSize.Y
+                end
+            end
+            local look = cf.LookVector
+            local flat = Vector3.new(look.X, 0, look.Z)
+            if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) end
+            pt.markCF = CFrame.lookAt(center, center + flat.Unit)
+            pt.markSize = Vector3.new(2, height, 1)
+        end
+
         -- Baris slot: tinggi otomatis mengikuti isi (TP: 2 baris, Jalan + Noclip: 3 baris)
         local row = Instance.new("Frame")
         row.Name = "Point_" .. pt.id
@@ -2580,6 +2714,7 @@ do
 
         nameBox.FocusLost:Connect(function()
             pt.name = nameBox.Text
+            UpdateMarkName(pt)
         end)
 
         modeBtn.MouseButton1Click:Connect(function()
@@ -2608,6 +2743,7 @@ do
             if i then table.remove(TP.points, i) end
             local j = table.find(TP.seq, pt)
             if j then table.remove(TP.seq, j) end
+            DestroyMark(pt)
             row:Destroy()
             RefreshSeq()
         end)
@@ -2615,10 +2751,15 @@ do
         pt.sync()
         pt.arrange()
         RefreshSeq()
+        if TP.boxMark then
+            BuildMark(pt)
+            UpdateMarkName(pt)
+        end
     end
 
     local function ClearAllPoints()
         for _, pt in ipairs(TP.points) do
+            DestroyMark(pt)
             if pt.row then pt.row:Destroy() end
         end
         table.clear(TP.points)
@@ -2906,6 +3047,10 @@ local function Shutdown()
     end
     pcall(NoclipReset)
     pcall(ESP.Clear)
+    if TP.markFolder then
+        pcall(function() TP.markFolder:Destroy() end)
+        TP.markFolder = nil
+    end
     if antiAfkConn then
         antiAfkConn:Disconnect()
         antiAfkConn = nil
