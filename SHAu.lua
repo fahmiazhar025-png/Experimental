@@ -256,7 +256,8 @@ ESP.EnsureGui = function()
 end
 
 ESP.NewEntry = function(getPath)
-    local e = {getPath = getPath, obj = nil, lastPath = nil, nextResolve = 0, nextText = 0}
+    local e = {getPath = getPath, obj = nil, lastPath = nil, nextResolve = 0, nextText = 0,
+        color = ORANGE, rainbow = false, applied = nil}
     table.insert(ESP.list, e)
     return e
 end
@@ -268,8 +269,9 @@ ESP.Step = function()
     local root = GetHumanoidRootPart()
     local origin = root and root.Position or cam.CFrame.Position
     local now = os.clock()
+    local rainbow = Color3.fromHSV((now * 0.3) % 1, 1, 1)
     for _, e in ipairs(ESP.list) do
-        local ok, err = pcall(ESP.UpdateEntry, e, cam, vp, origin, now)
+        local ok, err = pcall(ESP.UpdateEntry, e, cam, vp, origin, now, rainbow)
         if not ok and not e.warned then
             e.warned = true
             print("[ESP] " .. tostring(err))
@@ -277,7 +279,9 @@ ESP.Step = function()
     end
 end
 
-ESP.UpdateEntry = function(e, cam, vp, origin, now)
+ESP.UpdateEntry = function(e, cam, vp, origin, now, rainbow)
+    local col = e.rainbow and rainbow or e.color
+    if col ~= e.applied then ESP.Paint(e, col) end
     local path = e.getPath()
     if path ~= e.lastPath then          -- path diganti -> cari ulang objeknya
         e.lastPath = path
@@ -426,6 +430,7 @@ ESP.Set = function(e, feature, on)
             e.sb = nil
         end
     end
+    if on then ESP.Paint(e, e.color) end
     ESP.Refresh()
 end
 
@@ -527,6 +532,106 @@ ESP.MakeToggle = function(parent, text, size, pos, onToggle)
     end)
     paint()
     return t
+end
+
+-- ===== PEMILIH WARNA ESP (swatch) =====
+-- Warna terpilih memengaruhi nama, highlight, tracer, dan box. Rainbow Mode menimpa warna terpilih.
+ESP.COLORS = {
+    Color3.fromRGB(255, 140, 0),   -- oranye (bawaan)
+    Color3.fromRGB(235, 60, 60),   -- merah
+    Color3.fromRGB(250, 220, 40),  -- kuning
+    Color3.fromRGB(60, 210, 90),   -- hijau
+    Color3.fromRGB(40, 200, 220),  -- cyan
+    Color3.fromRGB(70, 130, 255),  -- biru
+    Color3.fromRGB(160, 90, 240),  -- ungu
+    Color3.fromRGB(255, 110, 190), -- pink
+    Color3.fromRGB(255, 255, 255), -- putih
+}
+
+ESP.Paint = function(e, col)
+    e.applied = col
+    if e.tracerLine then e.tracerLine.BackgroundColor3 = col end
+    if e.nameLabel then e.nameLabel.TextColor3 = col end
+    if e.hl then
+        e.hl.FillColor = col
+        e.hl.OutlineColor = col
+    end
+    if e.sb then e.sb.Color3 = col end
+end
+
+ESP.SetColor = function(e, col)
+    e.color = col
+    e.applied = nil
+    if not e.rainbow then ESP.Paint(e, col) end
+end
+
+ESP.SetRainbow = function(e, on)
+    e.rainbow = on and true or false
+    e.applied = nil
+    if not e.rainbow then ESP.Paint(e, e.color) end   -- kembali ke warna pilihan
+end
+
+-- canChange() boleh mengembalikan false untuk menolak (mis. slot dikunci)
+ESP.MakeColorPicker = function(parent, pos, entry, canChange)
+    local row = Instance.new("Frame")
+    row.Parent = parent
+    row.Size = UDim2.new(1, 0, 0, 22)
+    row.Position = pos
+    row.BackgroundTransparency = 1
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Parent = row
+    lbl.Size = UDim2.new(0, 40, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = "Warna:"
+    lbl.TextColor3 = TEXT_DARK
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 9
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local swatches = {}
+    local picker = {}
+    local function mark(col)
+        for _, sw in ipairs(swatches) do
+            local sel = (sw.color == col)
+            sw.stroke.Thickness = sel and 2 or 1
+            sw.stroke.Color = sel and TEXT_DARK or LINE
+        end
+    end
+
+    for i, col in ipairs(ESP.COLORS) do
+        local b = Instance.new("TextButton")
+        b.Parent = row
+        b.Size = UDim2.new(0, 20, 0, 20)
+        b.Position = UDim2.new(0, 44 + (i - 1) * 24, 0.5, -10)
+        b.BackgroundColor3 = col
+        b.Text = ""
+        b.AutoLocalize = false
+        b.AutoButtonColor = false
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, 5)
+        c.Parent = b
+        local s = Instance.new("UIStroke")
+        s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        s.Thickness = 1
+        s.Color = LINE
+        s.Parent = b
+        table.insert(swatches, {btn = b, color = col, stroke = s})
+        b.MouseButton1Click:Connect(function()
+            if canChange and canChange() == false then return end
+            ESP.SetColor(entry, col)
+            mark(col)
+        end)
+    end
+
+    picker.select = function(col) mark(col) end
+    picker.dim = function(on)     -- Rainbow aktif -> swatch diredupkan
+        for _, sw in ipairs(swatches) do
+            sw.btn.BackgroundTransparency = on and 0.6 or 0
+        end
+    end
+    mark(entry.color)
+    return picker
 end
 
 -- ========== GUI UTAMA ==========
@@ -870,7 +975,7 @@ UICornerGlobalDelay.Parent = GlobalDelayBox
 
 local StartAllBtn = Instance.new("TextButton")
 StartAllBtn.Parent = GlobalControl
-StartAllBtn.Size = UDim2.new(0.23, 0, 1, 0)
+StartAllBtn.Size = UDim2.new(0.36, 0, 1, 0)
 StartAllBtn.Position = UDim2.new(0.27, 0, 0, 0)
 StartAllBtn.BackgroundColor3 = Color3.fromRGB(46, 160, 90)
 StartAllBtn.Text = "▶ MULAI SEMUA"
@@ -883,8 +988,8 @@ UICornerStartAll.Parent = StartAllBtn
 
 local StopAllBtn = Instance.new("TextButton")
 StopAllBtn.Parent = GlobalControl
-StopAllBtn.Size = UDim2.new(0.23, 0, 1, 0)
-StopAllBtn.Position = UDim2.new(0.52, 0, 0, 0)
+StopAllBtn.Size = UDim2.new(0.36, 0, 1, 0)
+StopAllBtn.Position = UDim2.new(0.64, 0, 0, 0)
 StopAllBtn.BackgroundColor3 = Color3.fromRGB(205, 70, 70)
 StopAllBtn.Text = "■ BERHENTI SEMUA"
 StopAllBtn.TextColor3 = Color3.new(1, 1, 1)
@@ -924,6 +1029,14 @@ RemoteSlotList.FillDirection = Enum.FillDirection.Vertical
 RemoteSlotList.HorizontalAlignment = Enum.HorizontalAlignment.Center
 RemoteSlotList.SortOrder = Enum.SortOrder.LayoutOrder
 
+-- Tombol tambah slot Remote: biru, selalu di bawah slot terakhir (dinamis)
+AddRemoteSlotBtn.Parent = RemoteScrollFrame
+AddRemoteSlotBtn.Size = UDim2.new(1, -12, 0, 32)
+AddRemoteSlotBtn.LayoutOrder = 1000000
+AddRemoteSlotBtn.BackgroundColor3 = BTN_BLUE
+AddRemoteSlotBtn.Text = "+ TAMBAH SLOT REMOTE"
+AddRemoteSlotBtn.TextSize = 10
+
 -- ========== KONTEN TAB AUTO-COLLECT ==========
 local TabCollectContainer = Instance.new("Frame")
 TabCollectContainer.Parent = TabContentWrapper
@@ -947,8 +1060,8 @@ UICornerAddCollect.Parent = AddCollectSlotBtn
 
 local CollectScrollFrame = Instance.new("ScrollingFrame")
 CollectScrollFrame.Parent = TabCollectContainer
-CollectScrollFrame.Size = UDim2.new(1, 0, 1, -40)
-CollectScrollFrame.Position = UDim2.new(0, 0, 0, 38)
+CollectScrollFrame.Size = UDim2.new(1, 0, 1, 0)
+CollectScrollFrame.Position = UDim2.new(0, 0, 0, 0)
 CollectScrollFrame.BackgroundTransparency = 1
 CollectScrollFrame.ScrollBarThickness = 6
 CollectScrollFrame.ScrollBarImageColor3 = LINE
@@ -962,14 +1075,68 @@ CollectSlotList.FillDirection = Enum.FillDirection.Vertical
 CollectSlotList.HorizontalAlignment = Enum.HorizontalAlignment.Center
 CollectSlotList.SortOrder = Enum.SortOrder.LayoutOrder
 
+-- Tombol tambah slot Collect: biru, selalu di bawah slot terakhir (dinamis)
+AddCollectSlotBtn.Parent = CollectScrollFrame
+AddCollectSlotBtn.Size = UDim2.new(1, -12, 0, 34)
+AddCollectSlotBtn.LayoutOrder = 1000000
+AddCollectSlotBtn.BackgroundColor3 = BTN_BLUE
+
+-- ===== DEX++ (paling atas Tab Auto Collect) =====
+do
+    local DEX_URL = "https://raw.githubusercontent.com/infyiff/backup/main/dex.lua"   -- ganti jika punya sumber Dex++ lain
+
+    local Holder = Instance.new("Frame")
+    Holder.Parent = CollectScrollFrame
+    Holder.Size = UDim2.new(1, -12, 0, 34)
+    Holder.BackgroundTransparency = 1
+    Holder.LayoutOrder = -2
+
+    local DexBtn = Instance.new("TextButton")
+    DexBtn.Parent = Holder
+    DexBtn.Size = UDim2.new(1, 0, 1, 0)
+    DexBtn.BackgroundColor3 = BTN_TEAL
+    DexBtn.Text = "🔎 DEX++ (Explorer)"
+    DexBtn.TextColor3 = Color3.new(1, 1, 1)
+    DexBtn.Font = Enum.Font.GothamBold
+    DexBtn.TextSize = 11
+    DexBtn.AutoLocalize = false
+    DexBtn.AutoButtonColor = false
+    local dc = Instance.new("UICorner")
+    dc.CornerRadius = UDim.new(0, 6)
+    dc.Parent = DexBtn
+
+    local busy = false
+    DexBtn.MouseButton1Click:Connect(function()
+        if busy then return end
+        busy = true
+        DexBtn.Text = "Memuat Dex++..."
+        task.spawn(function()
+            local ok, err = pcall(function()
+                loadstring(game:HttpGet(DEX_URL, true))()
+            end)
+            if hubDestroyed then return end
+            if ok then
+                DexBtn.Text = "✅ Dex++ dimuat"
+            else
+                DexBtn.Text = "⚠ Gagal memuat (cek URL / executor)"
+                print("[Dex++] " .. tostring(err))
+            end
+            task.wait(2)
+            if hubDestroyed then return end
+            DexBtn.Text = "🔎 DEX++ (Explorer)"
+            busy = false
+        end)
+    end)
+end
+
 -- ===== KARTU "ESP OBJEK" (paling atas Tab Auto Collect) =====
 do
-    local CARD_H = 108
+    local CARD_H = 162
     local Card = Instance.new("Frame")
     Card.Parent = CollectScrollFrame
     Card.Size = UDim2.new(1, -12, 0, CARD_H)
     Card.BackgroundColor3 = HEADER_BG
-    Card.LayoutOrder = 0
+    Card.LayoutOrder = -1
     local cc = Instance.new("UICorner")
     cc.CornerRadius = UDim.new(0, 7)
     cc.Parent = Card
@@ -1038,6 +1205,11 @@ do
     Tg("highlight", "Highlight", 0.51, 26)
     Tg("name", "Nama ESP", 0, 52)
     Tg("box", "Box ESP", 0.51, 52)
+    local picker = ESP.MakeColorPicker(Content, UDim2.new(0, 0, 0, 78), entry)
+    ESP.MakeToggle(Content, "Rainbow Mode", UDim2.new(0.49, 0, 0, 20), UDim2.new(0, 0, 0, 104), function(on)
+        ESP.SetRainbow(entry, on)
+        picker.dim(on)
+    end)
 
     local collapsed = false
     MinBtn.MouseButton1Click:Connect(function()
@@ -1237,7 +1409,7 @@ local function CreateCollectSlot()
 
     local SlotWrapper = Instance.new("Frame")
     SlotWrapper.Parent = CollectScrollFrame
-    SlotWrapper.Size = UDim2.new(1, -12, 0, 172)
+    SlotWrapper.Size = UDim2.new(1, -12, 0, 224)
     SlotWrapper.BackgroundColor3 = HEADER_BG
     SlotWrapper.LayoutOrder = slotId
     local UICornerSlotW = Instance.new("UICorner")
@@ -1361,7 +1533,7 @@ local function CreateCollectSlot()
     local DLabel = Instance.new("TextLabel")
     DLabel.Parent = SlotContent
     DLabel.Size = UDim2.new(0.05, 0, 0, 18)
-    DLabel.Position = UDim2.new(0, 0, 0, 118)
+    DLabel.Position = UDim2.new(0, 0, 0, 168)
     DLabel.BackgroundTransparency = 1
     DLabel.Text = "D:"
     DLabel.TextColor3 = TEXT_DARK
@@ -1371,7 +1543,7 @@ local function CreateCollectSlot()
     local DelayBox = Instance.new("TextBox")
     DelayBox.Parent = SlotContent
     DelayBox.Size = UDim2.new(0.10, 0, 0, 18)
-    DelayBox.Position = UDim2.new(0.06, 0, 0, 118)
+    DelayBox.Position = UDim2.new(0.06, 0, 0, 168)
     DelayBox.BackgroundColor3 = INPUT_BG
     DelayBox.Text = "0.5"
     DelayBox.TextColor3 = TEXT_DARK
@@ -1386,7 +1558,7 @@ local function CreateCollectSlot()
     local YLabel = Instance.new("TextLabel")
     YLabel.Parent = SlotContent
     YLabel.Size = UDim2.new(0.07, 0, 0, 18)
-    YLabel.Position = UDim2.new(0.18, 0, 0, 118)
+    YLabel.Position = UDim2.new(0.18, 0, 0, 168)
     YLabel.BackgroundTransparency = 1
     YLabel.Text = "<Y:"
     YLabel.TextColor3 = TEXT_DARK
@@ -1396,7 +1568,7 @@ local function CreateCollectSlot()
     local YLimitBox = Instance.new("TextBox")
     YLimitBox.Parent = SlotContent
     YLimitBox.Size = UDim2.new(0.14, 0, 0, 18)
-    YLimitBox.Position = UDim2.new(0.26, 0, 0, 118)
+    YLimitBox.Position = UDim2.new(0.26, 0, 0, 168)
     YLimitBox.BackgroundColor3 = INPUT_BG
     YLimitBox.Text = ""
     YLimitBox.PlaceholderText = "Batas Y"
@@ -1412,7 +1584,7 @@ local function CreateCollectSlot()
     local ResetBtn = Instance.new("TextButton")
     ResetBtn.Parent = SlotContent
     ResetBtn.Size = UDim2.new(0.16, 0, 0, 18)
-    ResetBtn.Position = UDim2.new(0.42, 0, 0, 118)
+    ResetBtn.Position = UDim2.new(0.42, 0, 0, 168)
     ResetBtn.BackgroundColor3 = BTN_GRAY
     ResetBtn.Text = "RESET"
     ResetBtn.TextColor3 = Color3.new(1, 1, 1)
@@ -1425,7 +1597,7 @@ local function CreateCollectSlot()
     local StartStopBtn = Instance.new("TextButton")
     StartStopBtn.Parent = SlotContent
     StartStopBtn.Size = UDim2.new(0.38, 0, 0, 18)
-    StartStopBtn.Position = UDim2.new(0.60, 0, 0, 118)
+    StartStopBtn.Position = UDim2.new(0.60, 0, 0, 168)
     StartStopBtn.BackgroundColor3 = BTN_GREEN
     StartStopBtn.Text = "▶ MULAI"
     StartStopBtn.TextColor3 = Color3.new(1, 1, 1)
@@ -1497,6 +1669,14 @@ local function CreateCollectSlot()
     EspToggle("highlight", "Highlight", 0.51, 68)
     EspToggle("name", "Nama ESP", 0, 92)
     EspToggle("box", "Box ESP", 0.51, 92)
+    slotData.espPicker = ESP.MakeColorPicker(SlotContent, UDim2.new(0, 0, 0, 116), slotData.espEntry, function()
+        return not slotData.locked
+    end)
+    slotData.espToggles.rainbow = ESP.MakeToggle(SlotContent, "Rainbow Mode", UDim2.new(0.49, 0, 0, 20), UDim2.new(0, 0, 0, 142), function(on)
+        if slotData.locked then return false end
+        ESP.SetRainbow(slotData.espEntry, on)
+        slotData.espPicker.dim(on)
+    end)
 
     local function UpdateStar()
         if slotData.priority then
@@ -1555,6 +1735,10 @@ local function CreateCollectSlot()
         UpdateStar()
         for _, tg in pairs(slotData.espToggles) do tg.set(false) end
         ESP.SetAll(slotData.espEntry, false)
+        ESP.SetRainbow(slotData.espEntry, false)
+        ESP.SetColor(slotData.espEntry, ESP.COLORS[1])
+        slotData.espPicker.select(ESP.COLORS[1])
+        slotData.espPicker.dim(false)
     end)
 
     StartStopBtn.MouseButton1Click:Connect(function()
@@ -1590,7 +1774,7 @@ local function CreateCollectSlot()
         else
             SlotMinBtn.Text = "−"
             SlotContent.Visible = true
-            SlotWrapper.Size = UDim2.new(1, -12, 0, 172)
+            SlotWrapper.Size = UDim2.new(1, -12, 0, 224)
         end
     end)
 
