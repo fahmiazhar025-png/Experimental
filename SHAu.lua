@@ -67,7 +67,7 @@ local antiAfkConn = nil
 local TP = {
     points = {}, seq = {}, counter = 0,
     posMode = "tp", pickMode = false, busy = false,
-    boxMark = false, posName = false, markFolder = nil,
+    boxMark = false, posName = false, seeThrough = false, markFolder = nil, markThread = nil,
     farmActive = false, farmThread = nil, manualThread = nil,
     tween = nil, delThread = nil, onRespawn = nil,
 }
@@ -2335,7 +2335,25 @@ do
         TP.markFolder = f
     end
 
-    -- Nama titik di atas kotak (hanya jika Pos Name aktif)
+    local function MarkOrigin()
+        local root = GetHumanoidRootPart()
+        if root then return root.Position end
+        local cam = workspace.CurrentCamera
+        return cam and cam.CFrame.Position or nil
+    end
+
+    -- Jarak (di bawah nama): hanya menulis teks bila angkanya berubah
+    local function UpdateMarkDistance(pt, origin)
+        local m = pt.mark
+        if not (m and m.dlbl and origin) then return end
+        local d = math.floor((pt.markCF.Position - origin).Magnitude + 0.5)
+        if d ~= m.lastDist then
+            m.lastDist = d
+            m.dlbl.Text = d .. "m"
+        end
+    end
+
+    -- Nama titik + jarak di atas kotak (hanya jika Pos Name aktif)
     local function UpdateMarkName(pt)
         local m = pt.mark
         if not m then return end
@@ -2345,26 +2363,42 @@ do
                 local bb = Instance.new("BillboardGui")
                 bb.Name = "PosName"
                 bb.Adornee = base
-                bb.AlwaysOnTop = true
+                bb.AlwaysOnTop = TP.seeThrough
                 bb.LightInfluence = 0
-                bb.Size = UDim2.fromOffset(180, 22)
-                bb.StudsOffsetWorldSpace = pt.markCF.Position + Vector3.new(0, pt.markSize.Y * 0.5 + 1.2, 0) - base.Position
+                bb.Size = UDim2.fromOffset(180, 34)
+                bb.StudsOffsetWorldSpace = pt.markCF.Position + Vector3.new(0, pt.markSize.Y * 0.5 + 1.6, 0) - base.Position
+
                 local lbl = Instance.new("TextLabel")
+                lbl.Name = "Nama"
                 lbl.Parent = bb
-                lbl.Size = UDim2.new(1, 0, 1, 0)
+                lbl.Size = UDim2.new(1, 0, 0.56, 0)
                 lbl.BackgroundTransparency = 1
                 lbl.TextColor3 = Color3.new(1, 1, 1)
                 lbl.TextStrokeColor3 = MARK_COLOR
                 lbl.TextStrokeTransparency = 0.2
                 lbl.Font = Enum.Font.GothamBold
                 lbl.TextSize = 13
+
+                local dlbl = Instance.new("TextLabel")   -- jarak, tepat di bawah nama
+                dlbl.Name = "Jarak"
+                dlbl.Parent = bb
+                dlbl.Size = UDim2.new(1, 0, 0.44, 0)
+                dlbl.Position = UDim2.new(0, 0, 0.56, 0)
+                dlbl.BackgroundTransparency = 1
+                dlbl.TextColor3 = Color3.fromRGB(225, 205, 255)
+                dlbl.TextStrokeColor3 = MARK_COLOR
+                dlbl.TextStrokeTransparency = 0.3
+                dlbl.Font = Enum.Font.Gotham
+                dlbl.TextSize = 11
+
                 bb.Parent = m.root
-                m.bb, m.lbl = bb, lbl
+                m.bb, m.lbl, m.dlbl, m.lastDist = bb, lbl, dlbl, nil
             end
             m.lbl.Text = pt.name
+            UpdateMarkDistance(pt, MarkOrigin())
         elseif m.bb then
             m.bb:Destroy()
-            m.bb, m.lbl = nil, nil
+            m.bb, m.lbl, m.dlbl, m.lastDist = nil, nil, nil, nil
         end
     end
 
@@ -2382,7 +2416,7 @@ do
         box.CFrame = base.CFrame:ToObjectSpace(pt.markCF)
         box.Color3 = MARK_COLOR
         box.Transparency = 0.65
-        box.AlwaysOnTop = true
+        box.AlwaysOnTop = TP.seeThrough
         box.ZIndex = 1
         box.Parent = holder
 
@@ -2392,17 +2426,61 @@ do
         ball.CFrame = base.CFrame:ToObjectSpace(CFrame.new(pt.markCF.Position))
         ball.Color3 = MARK_COLOR
         ball.Transparency = 0.2
-        ball.AlwaysOnTop = true
+        ball.AlwaysOnTop = TP.seeThrough
         ball.ZIndex = 2
         ball.Parent = holder
 
-        pt.mark = {root = holder, bb = nil, lbl = nil}
+        pt.mark = {root = holder, box = box, ball = ball, bb = nil, lbl = nil, dlbl = nil, lastDist = nil}
     end
 
     local function DestroyMark(pt)
         if pt.mark then
             pcall(function() pt.mark.root:Destroy() end)
             pt.mark = nil
+        end
+    end
+
+    -- Tembus Tembok: ON = terlihat dari balik tembok/objek, OFF = tertutup tembok/objek
+    local function ApplyOcclusion()
+        for _, pt in ipairs(TP.points) do
+            local m = pt.mark
+            if m then
+                m.box.AlwaysOnTop = TP.seeThrough
+                m.ball.AlwaysOnTop = TP.seeThrough
+                if m.bb then m.bb.AlwaysOnTop = TP.seeThrough end
+            end
+        end
+    end
+
+    -- Satu thread ringan (5x/detik) hanya untuk memperbarui jarak; berhenti otomatis bila tidak diperlukan
+    local function StopMarkLoop()
+        if TP.markThread then
+            pcall(task.cancel, TP.markThread)
+            TP.markThread = nil
+        end
+    end
+
+    local function EnsureMarkLoop()
+        if TP.markThread then return end
+        TP.markThread = task.spawn(function()
+            while TP.boxMark and TP.posName and not hubDestroyed do
+                local origin = MarkOrigin()
+                if origin then
+                    for _, pt in ipairs(TP.points) do
+                        UpdateMarkDistance(pt, origin)
+                    end
+                end
+                task.wait(0.2)
+            end
+            TP.markThread = nil
+        end)
+    end
+
+    local function SyncMarkLoop()
+        if TP.boxMark and TP.posName and #TP.points > 0 then
+            EnsureMarkLoop()
+        else
+            StopMarkLoop()
         end
     end
 
@@ -2419,6 +2497,7 @@ do
             TP.markFolder:Destroy()
             TP.markFolder = nil
         end
+        SyncMarkLoop()
     end
 
     -- ===== Kartu 1: Posisi & Teleport =====
@@ -2452,10 +2531,12 @@ do
     -- ===== Kartu: Box Mark (di bawah Cara Perpindahan global) =====
     local CardMark = NewCard(3, "🟪 BOX MARK (TANDA TITIK)")
     local RowMark = NewRow(CardMark, 1, 22)
+    local RowThrough = NewRow(CardMark, 2, 22)
     local posNameToggle
     ESP.MakeToggle(RowMark, "Box Mark", UDim2.new(0.49, 0, 1, 0), UDim2.new(0, 0, 0, 0), function(on)
         TP.boxMark = on
-        posNameToggle.btn.Visible = on          -- Pos Name hanya muncul saat Box Mark aktif
+        posNameToggle.btn.Visible = on          -- Pos Name & Tembus Tembok hanya muncul saat Box Mark aktif
+        RowThrough.Visible = on
         RefreshMarks()
     end)
     posNameToggle = ESP.MakeToggle(RowMark, "Pos Name", UDim2.new(0.49, 0, 1, 0), UDim2.new(0.51, 0, 0, 0), function(on)
@@ -2463,6 +2544,11 @@ do
         RefreshMarks()
     end)
     posNameToggle.btn.Visible = false
+    ESP.MakeToggle(RowThrough, "Tembus Tembok", UDim2.new(0.49, 0, 1, 0), UDim2.new(0, 0, 0, 0), function(on)
+        TP.seeThrough = on
+        ApplyOcclusion()
+    end)
+    RowThrough.Visible = false
 
     -- ===== Kartu 3: Titik Tersimpan (slot) =====
     local CardPoints = NewCard(4, "📋 TITIK TERSIMPAN")
@@ -2746,6 +2832,7 @@ do
             DestroyMark(pt)
             row:Destroy()
             RefreshSeq()
+            SyncMarkLoop()
         end)
 
         pt.sync()
@@ -2754,6 +2841,7 @@ do
         if TP.boxMark then
             BuildMark(pt)
             UpdateMarkName(pt)
+            SyncMarkLoop()
         end
     end
 
@@ -2765,6 +2853,7 @@ do
         table.clear(TP.points)
         table.clear(TP.seq)
         RefreshSeq()
+        SyncMarkLoop()
     end
 
     -- Auto Farm berantai: slot terpilih dikunjungi berulang, memakai mode/delay/kec/tinggi masing-masing
@@ -3047,6 +3136,10 @@ local function Shutdown()
     end
     pcall(NoclipReset)
     pcall(ESP.Clear)
+    if TP.markThread then
+        pcall(task.cancel, TP.markThread)
+        TP.markThread = nil
+    end
     if TP.markFolder then
         pcall(function() TP.markFolder:Destroy() end)
         TP.markFolder = nil
