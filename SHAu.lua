@@ -13,7 +13,7 @@ if env.ShrimpHubShutdown then
     env.ShrimpHubShutdown = nil
 end
 for _, gui in ipairs(LocalPlayer.PlayerGui:GetChildren()) do
-    if gui.Name == "Shrimp_Hub_Auto" or gui.Name == "Shrimp_Hub_Logo" then
+    if gui.Name == "Shrimp_Hub_Auto" or gui.Name == "Shrimp_Hub_Logo" or gui.Name == "Shrimp_Hub_ESP" then
         pcall(function() gui:Destroy() end)
     end
 end
@@ -222,6 +222,311 @@ local function GetTargetPosition(targetObj)
         end
     end
     return nil
+end
+
+-- ========== ESP OBJEK ==========
+-- Satu koneksi RenderStepped untuk semua entri ESP (kartu atas + tiap slot Collect).
+-- Anti kebocoran memori:
+--   * koneksi hanya ada selama minimal satu fitur ESP aktif, otomatis diputus saat semua mati
+--   * Instance (garis, label, Highlight, SelectionBox) dibuat saat toggle ON dan dihancurkan saat OFF,
+--     saat slot dihapus, dan saat Shutdown; tidak ada Instance baru dibuat per frame
+--   * pencarian objek via path dibatasi 2x/detik, teks nama diperbarui 10x/detik
+--   * ScreenGui ESP ikut dihancurkan saat tidak ada fitur yang aktif
+local ESP = {list = {}, conn = nil, gui = nil, folder = nil}
+
+ESP.Pos = function(obj)
+    if obj:IsA("BasePart") then return obj.Position end
+    if obj:IsA("Model") then return obj:GetPivot().Position end
+    return GetTargetPosition(obj)
+end
+
+ESP.EnsureGui = function()
+    if ESP.gui and ESP.gui.Parent then return end
+    local g = Instance.new("ScreenGui")
+    g.Name = "Shrimp_Hub_ESP"
+    g.ResetOnSpawn = false
+    g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    g.DisplayOrder = 999999
+    g.IgnoreGuiInset = true
+    g.Parent = LocalPlayer.PlayerGui
+    local f = Instance.new("Folder")
+    f.Name = "Adornments"
+    f.Parent = g
+    ESP.gui, ESP.folder = g, f
+end
+
+ESP.NewEntry = function(getPath)
+    local e = {getPath = getPath, obj = nil, lastPath = nil, nextResolve = 0, nextText = 0}
+    table.insert(ESP.list, e)
+    return e
+end
+
+ESP.Step = function()
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+    local vp = cam.ViewportSize
+    local root = GetHumanoidRootPart()
+    local origin = root and root.Position or cam.CFrame.Position
+    local now = os.clock()
+    for _, e in ipairs(ESP.list) do
+        local ok, err = pcall(ESP.UpdateEntry, e, cam, vp, origin, now)
+        if not ok and not e.warned then
+            e.warned = true
+            print("[ESP] " .. tostring(err))
+        end
+    end
+end
+
+ESP.UpdateEntry = function(e, cam, vp, origin, now)
+    local path = e.getPath()
+    if path ~= e.lastPath then          -- path diganti -> cari ulang objeknya
+        e.lastPath = path
+        e.obj = nil
+        e.nextResolve = 0
+    end
+    local obj = e.obj
+    if obj and not obj:IsDescendantOf(game) then
+        obj = nil
+        e.obj = nil
+    end
+    if not obj and now >= e.nextResolve then
+        e.nextResolve = now + 0.5
+        obj = ResolveSafePath(path)
+        e.obj = obj
+    end
+    if e.hl and e.hl.Adornee ~= obj then e.hl.Adornee = obj end
+    if e.sb and e.sb.Adornee ~= obj then e.sb.Adornee = obj end
+
+    local line, label = e.tracerLine, e.nameLabel
+    if not (line or label) then return end
+    local pos = obj and ESP.Pos(obj)
+    if not pos then
+        if line then line.Visible = false end
+        if label then label.Visible = false end
+        return
+    end
+
+    local sp, onScreen = cam:WorldToViewportPoint(pos)
+    local x, y = sp.X, sp.Y
+    if sp.Z < 0 then                    -- di belakang kamera: cerminkan agar garis tetap menunjuk arahnya
+        x = vp.X - x
+        y = vp.Y - y
+    end
+    if line then
+        local ax, ay = vp.X * 0.5, vp.Y   -- tracer dari tengah bawah layar
+        local dx, dy = x - ax, y - ay
+        line.Size = UDim2.fromOffset(math.sqrt(dx * dx + dy * dy), 2)
+        line.Position = UDim2.fromOffset((ax + x) * 0.5, (ay + y) * 0.5)
+        line.Rotation = math.deg(math.atan2(dy, dx))
+        line.Visible = true
+    end
+    if label then
+        if onScreen then
+            label.Position = UDim2.fromOffset(x, y)
+            if now >= e.nextText then
+                e.nextText = now + 0.1
+                label.Text = string.format("%s [%dm]", obj.Name, math.floor((pos - origin).Magnitude + 0.5))
+            end
+            label.Visible = true
+        else
+            label.Visible = false
+        end
+    end
+end
+
+ESP.Refresh = function()
+    local any = false
+    for _, e in ipairs(ESP.list) do
+        if e.tracerLine or e.nameLabel or e.hl or e.sb then
+            any = true
+            break
+        end
+    end
+    if any then
+        if not ESP.conn then
+            ESP.conn = RunService.RenderStepped:Connect(ESP.Step)
+        end
+    else
+        if ESP.conn then
+            ESP.conn:Disconnect()
+            ESP.conn = nil
+        end
+        if ESP.gui then
+            ESP.gui:Destroy()
+            ESP.gui, ESP.folder = nil, nil
+        end
+    end
+end
+
+-- feature: "tracer" | "name" | "highlight" | "box"
+ESP.Set = function(e, feature, on)
+    on = on and true or false
+    if on then ESP.EnsureGui() end
+
+    if feature == "tracer" then
+        if on and not e.tracerLine then
+            local f = Instance.new("Frame")
+            f.Name = "Tracer"
+            f.AnchorPoint = Vector2.new(0.5, 0.5)
+            f.BackgroundColor3 = ORANGE
+            f.BorderSizePixel = 0
+            f.Visible = false
+            f.Parent = ESP.gui
+            e.tracerLine = f
+        elseif not on and e.tracerLine then
+            e.tracerLine:Destroy()
+            e.tracerLine = nil
+        end
+    elseif feature == "name" then
+        if on and not e.nameLabel then
+            local l = Instance.new("TextLabel")
+            l.Name = "NameEsp"
+            l.AnchorPoint = Vector2.new(0.5, 1)
+            l.Size = UDim2.fromOffset(220, 16)
+            l.BackgroundTransparency = 1
+            l.Text = ""
+            l.TextColor3 = Color3.new(1, 1, 1)
+            l.TextStrokeColor3 = Color3.new(0, 0, 0)
+            l.TextStrokeTransparency = 0.3
+            l.Font = Enum.Font.GothamBold
+            l.TextSize = 12
+            l.Visible = false
+            l.Parent = ESP.gui
+            e.nameLabel = l
+            e.nextText = 0
+        elseif not on and e.nameLabel then
+            e.nameLabel:Destroy()
+            e.nameLabel = nil
+        end
+    elseif feature == "highlight" then
+        if on and not e.hl then
+            local h = Instance.new("Highlight")
+            h.Name = "HighlightEsp"
+            h.FillColor = ORANGE
+            h.FillTransparency = 0.6
+            h.OutlineColor = Color3.new(1, 1, 1)
+            h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            h.Parent = ESP.folder
+            e.hl = h
+        elseif not on and e.hl then
+            e.hl:Destroy()
+            e.hl = nil
+        end
+    elseif feature == "box" then
+        if on and not e.sb then
+            local b = Instance.new("SelectionBox")   -- kerangka (jaring-jaring) kubus di sekeliling objek
+            b.Name = "BoxEsp"
+            b.Color3 = ORANGE
+            b.LineThickness = 0.05
+            b.SurfaceTransparency = 1
+            b.Parent = ESP.folder
+            e.sb = b
+        elseif not on and e.sb then
+            e.sb:Destroy()
+            e.sb = nil
+        end
+    end
+    ESP.Refresh()
+end
+
+ESP.SetAll = function(e, on)
+    if not e then return end
+    ESP.Set(e, "tracer", on)
+    ESP.Set(e, "name", on)
+    ESP.Set(e, "highlight", on)
+    ESP.Set(e, "box", on)
+end
+
+ESP.Remove = function(e)
+    if not e then return end
+    for _, k in ipairs({"tracerLine", "nameLabel", "hl", "sb"}) do
+        if e[k] then
+            pcall(function() e[k]:Destroy() end)
+            e[k] = nil
+        end
+    end
+    e.obj = nil
+    local i = table.find(ESP.list, e)
+    if i then table.remove(ESP.list, i) end
+    ESP.Refresh()
+end
+
+ESP.Clear = function()
+    for i = #ESP.list, 1, -1 do
+        ESP.Remove(ESP.list[i])
+    end
+    if ESP.conn then
+        ESP.conn:Disconnect()
+        ESP.conn = nil
+    end
+    if ESP.gui then
+        ESP.gui:Destroy()
+        ESP.gui, ESP.folder = nil, nil
+    end
+end
+
+-- Toggle berlingkaran: lingkaran kosong = mati, lingkaran hijau + latar peach = aktif.
+-- onToggle(newState) boleh mengembalikan false untuk menolak perubahan (mis. slot sedang dikunci).
+ESP.MakeToggle = function(parent, text, size, pos, onToggle)
+    local btn = Instance.new("TextButton")
+    btn.Parent = parent
+    btn.Size = size
+    btn.Position = pos
+    btn.BackgroundColor3 = INPUT_BG
+    btn.Text = ""
+    btn.AutoLocalize = false
+    btn.AutoButtonColor = false
+    local c1 = Instance.new("UICorner")
+    c1.CornerRadius = UDim.new(0, 5)
+    c1.Parent = btn
+    local s1 = Instance.new("UIStroke")
+    s1.Color = LINE
+    s1.Thickness = 1
+    s1.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s1.Parent = btn
+
+    local circle = Instance.new("Frame")
+    circle.Parent = btn
+    circle.Size = UDim2.new(0, 10, 0, 10)
+    circle.Position = UDim2.new(0, 6, 0.5, -5)
+    circle.BackgroundColor3 = INPUT_BG
+    local c2 = Instance.new("UICorner")
+    c2.CornerRadius = UDim.new(1, 0)
+    c2.Parent = circle
+    local s2 = Instance.new("UIStroke")
+    s2.Color = LINE
+    s2.Thickness = 1
+    s2.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s2.Parent = circle
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Parent = btn
+    lbl.Size = UDim2.new(1, -22, 1, 0)
+    lbl.Position = UDim2.new(0, 20, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = TEXT_DARK
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 9
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local t = {state = false, btn = btn}
+    local function paint()
+        circle.BackgroundColor3 = t.state and BTN_GREEN or INPUT_BG
+        btn.BackgroundColor3 = t.state and TAB_ACTIVE or INPUT_BG
+    end
+    t.set = function(v)
+        t.state = v and true or false
+        paint()
+    end
+    btn.MouseButton1Click:Connect(function()
+        local ns = not t.state
+        if onToggle and onToggle(ns) == false then return end
+        t.state = ns
+        paint()
+    end)
+    paint()
+    return t
 end
 
 -- ========== GUI UTAMA ==========
@@ -657,6 +962,92 @@ CollectSlotList.FillDirection = Enum.FillDirection.Vertical
 CollectSlotList.HorizontalAlignment = Enum.HorizontalAlignment.Center
 CollectSlotList.SortOrder = Enum.SortOrder.LayoutOrder
 
+-- ===== KARTU "ESP OBJEK" (paling atas Tab Auto Collect) =====
+do
+    local CARD_H = 108
+    local Card = Instance.new("Frame")
+    Card.Parent = CollectScrollFrame
+    Card.Size = UDim2.new(1, -12, 0, CARD_H)
+    Card.BackgroundColor3 = HEADER_BG
+    Card.LayoutOrder = 0
+    local cc = Instance.new("UICorner")
+    cc.CornerRadius = UDim.new(0, 7)
+    cc.Parent = Card
+
+    local Head = Instance.new("Frame")
+    Head.Parent = Card
+    Head.Size = UDim2.new(1, -6, 0, 26)
+    Head.Position = UDim2.new(0, 3, 0, 3)
+    Head.BackgroundColor3 = SLOT_HEADER
+    local ch = Instance.new("UICorner")
+    ch.CornerRadius = UDim.new(0, 5)
+    ch.Parent = Head
+
+    local Title = Instance.new("TextLabel")
+    Title.Parent = Head
+    Title.Size = UDim2.new(1, -40, 1, 0)
+    Title.Position = UDim2.new(0, 8, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.Text = "ESP Objek"
+    Title.TextColor3 = TEXT_DARK
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 11
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+
+    local MinBtn = Instance.new("TextButton")
+    MinBtn.Parent = Head
+    MinBtn.Size = UDim2.new(0, 22, 0, 22)
+    MinBtn.Position = UDim2.new(1, -26, 0.5, -11)
+    MinBtn.BackgroundColor3 = Color3.fromRGB(230, 150, 40)
+    MinBtn.Text = "−"
+    MinBtn.TextColor3 = Color3.new(1, 1, 1)
+    MinBtn.Font = Enum.Font.GothamBlack
+    MinBtn.TextSize = 12
+    local cm = Instance.new("UICorner")
+    cm.CornerRadius = UDim.new(0, 4)
+    cm.Parent = MinBtn
+
+    local Content = Instance.new("Frame")
+    Content.Parent = Card
+    Content.Size = UDim2.new(1, -6, 1, -34)
+    Content.Position = UDim2.new(0, 3, 0, 32)
+    Content.BackgroundTransparency = 1
+
+    local PathBox = Instance.new("TextBox")
+    PathBox.Parent = Content
+    PathBox.Size = UDim2.new(1, 0, 0, 22)
+    PathBox.BackgroundColor3 = INPUT_BG
+    PathBox.PlaceholderText = "Path Objek: Workspace.Benda"
+    PathBox.PlaceholderColor3 = PLACEHOLDER
+    PathBox.Text = ""
+    PathBox.TextColor3 = TEXT_DARK
+    PathBox.Font = Enum.Font.Gotham
+    PathBox.TextSize = 9
+    PathBox.ClearTextOnFocus = false
+    local cp = Instance.new("UICorner")
+    cp.CornerRadius = UDim.new(0, 4)
+    cp.Parent = PathBox
+
+    local entry = ESP.NewEntry(function() return PathBox.Text end)
+    local function Tg(key, text, x, y)
+        ESP.MakeToggle(Content, text, UDim2.new(0.49, 0, 0, 20), UDim2.new(x, 0, 0, y), function(on)
+            ESP.Set(entry, key, on)
+        end)
+    end
+    Tg("tracer", "Tracer", 0, 26)
+    Tg("highlight", "Highlight", 0.51, 26)
+    Tg("name", "Nama ESP", 0, 52)
+    Tg("box", "Box ESP", 0.51, 52)
+
+    local collapsed = false
+    MinBtn.MouseButton1Click:Connect(function()
+        collapsed = not collapsed
+        Content.Visible = not collapsed
+        Card.Size = UDim2.new(1, -12, 0, collapsed and 34 or CARD_H)
+        MinBtn.Text = collapsed and "+" or "−"
+    end)
+end
+
 -- ==================================================
 -- PENJADWAL AUTO-COLLECT (BERGILIRAN + PRIORITAS)
 -- Aturan antrean:
@@ -846,7 +1237,7 @@ local function CreateCollectSlot()
 
     local SlotWrapper = Instance.new("Frame")
     SlotWrapper.Parent = CollectScrollFrame
-    SlotWrapper.Size = UDim2.new(1, -12, 0, 112)
+    SlotWrapper.Size = UDim2.new(1, -12, 0, 172)
     SlotWrapper.BackgroundColor3 = HEADER_BG
     SlotWrapper.LayoutOrder = slotId
     local UICornerSlotW = Instance.new("UICorner")
@@ -970,7 +1361,7 @@ local function CreateCollectSlot()
     local DLabel = Instance.new("TextLabel")
     DLabel.Parent = SlotContent
     DLabel.Size = UDim2.new(0.05, 0, 0, 18)
-    DLabel.Position = UDim2.new(0, 0, 0, 52)
+    DLabel.Position = UDim2.new(0, 0, 0, 118)
     DLabel.BackgroundTransparency = 1
     DLabel.Text = "D:"
     DLabel.TextColor3 = TEXT_DARK
@@ -980,7 +1371,7 @@ local function CreateCollectSlot()
     local DelayBox = Instance.new("TextBox")
     DelayBox.Parent = SlotContent
     DelayBox.Size = UDim2.new(0.10, 0, 0, 18)
-    DelayBox.Position = UDim2.new(0.06, 0, 0, 52)
+    DelayBox.Position = UDim2.new(0.06, 0, 0, 118)
     DelayBox.BackgroundColor3 = INPUT_BG
     DelayBox.Text = "0.5"
     DelayBox.TextColor3 = TEXT_DARK
@@ -995,7 +1386,7 @@ local function CreateCollectSlot()
     local YLabel = Instance.new("TextLabel")
     YLabel.Parent = SlotContent
     YLabel.Size = UDim2.new(0.07, 0, 0, 18)
-    YLabel.Position = UDim2.new(0.18, 0, 0, 52)
+    YLabel.Position = UDim2.new(0.18, 0, 0, 118)
     YLabel.BackgroundTransparency = 1
     YLabel.Text = "<Y:"
     YLabel.TextColor3 = TEXT_DARK
@@ -1005,7 +1396,7 @@ local function CreateCollectSlot()
     local YLimitBox = Instance.new("TextBox")
     YLimitBox.Parent = SlotContent
     YLimitBox.Size = UDim2.new(0.14, 0, 0, 18)
-    YLimitBox.Position = UDim2.new(0.26, 0, 0, 52)
+    YLimitBox.Position = UDim2.new(0.26, 0, 0, 118)
     YLimitBox.BackgroundColor3 = INPUT_BG
     YLimitBox.Text = ""
     YLimitBox.PlaceholderText = "Batas Y"
@@ -1021,7 +1412,7 @@ local function CreateCollectSlot()
     local ResetBtn = Instance.new("TextButton")
     ResetBtn.Parent = SlotContent
     ResetBtn.Size = UDim2.new(0.16, 0, 0, 18)
-    ResetBtn.Position = UDim2.new(0.42, 0, 0, 52)
+    ResetBtn.Position = UDim2.new(0.42, 0, 0, 118)
     ResetBtn.BackgroundColor3 = BTN_GRAY
     ResetBtn.Text = "RESET"
     ResetBtn.TextColor3 = Color3.new(1, 1, 1)
@@ -1034,7 +1425,7 @@ local function CreateCollectSlot()
     local StartStopBtn = Instance.new("TextButton")
     StartStopBtn.Parent = SlotContent
     StartStopBtn.Size = UDim2.new(0.38, 0, 0, 18)
-    StartStopBtn.Position = UDim2.new(0.60, 0, 0, 52)
+    StartStopBtn.Position = UDim2.new(0.60, 0, 0, 118)
     StartStopBtn.BackgroundColor3 = BTN_GREEN
     StartStopBtn.Text = "▶ MULAI"
     StartStopBtn.TextColor3 = Color3.new(1, 1, 1)
@@ -1081,6 +1472,31 @@ local function CreateCollectSlot()
         mode = "teleport",
     }
     table.insert(collectSlots, slotData)
+
+    -- ===== ESP Objek slot ini (memakai Path Objek slot) =====
+    local EspLabel = Instance.new("TextLabel")
+    EspLabel.Parent = SlotContent
+    EspLabel.Size = UDim2.new(1, 0, 0, 14)
+    EspLabel.Position = UDim2.new(0, 0, 0, 52)
+    EspLabel.BackgroundTransparency = 1
+    EspLabel.Text = "ESP Objek"
+    EspLabel.TextColor3 = TEXT_DARK
+    EspLabel.Font = Enum.Font.GothamBold
+    EspLabel.TextSize = 9
+    EspLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    slotData.espEntry = ESP.NewEntry(function() return DexPathBox.Text end)
+    slotData.espToggles = {}
+    local function EspToggle(key, text, x, y)
+        slotData.espToggles[key] = ESP.MakeToggle(SlotContent, text, UDim2.new(0.49, 0, 0, 20), UDim2.new(x, 0, 0, y), function(on)
+            if slotData.locked then return false end
+            ESP.Set(slotData.espEntry, key, on)
+        end)
+    end
+    EspToggle("tracer", "Tracer", 0, 68)
+    EspToggle("highlight", "Highlight", 0.51, 68)
+    EspToggle("name", "Nama ESP", 0, 92)
+    EspToggle("box", "Box ESP", 0.51, 92)
 
     local function UpdateStar()
         if slotData.priority then
@@ -1137,6 +1553,8 @@ local function CreateCollectSlot()
         ModeBtn.Text = "MODE: TELEPORT"
         slotData.priority = false
         UpdateStar()
+        for _, tg in pairs(slotData.espToggles) do tg.set(false) end
+        ESP.SetAll(slotData.espEntry, false)
     end)
 
     StartStopBtn.MouseButton1Click:Connect(function()
@@ -1172,7 +1590,7 @@ local function CreateCollectSlot()
         else
             SlotMinBtn.Text = "−"
             SlotContent.Visible = true
-            SlotWrapper.Size = UDim2.new(1, -12, 0, 112)
+            SlotWrapper.Size = UDim2.new(1, -12, 0, 172)
         end
     end)
 
@@ -1184,6 +1602,7 @@ local function CreateCollectSlot()
                 break
             end
         end
+        ESP.Remove(slotData.espEntry)
         SlotWrapper:Destroy()
     end)
 
@@ -2302,6 +2721,7 @@ local function Shutdown()
         TP.delThread = nil
     end
     pcall(NoclipReset)
+    pcall(ESP.Clear)
     if antiAfkConn then
         antiAfkConn:Disconnect()
         antiAfkConn = nil
