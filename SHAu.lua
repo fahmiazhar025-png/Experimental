@@ -222,10 +222,10 @@ local function SplitPath(pathStr)
     return segs
 end
 
-local function ResolveSafePath(pathStr)
-    if not pathStr or pathStr == "" then return nil end
+local function ResolveSegs(segs, n)
     local current = game
-    for _, seg in ipairs(SplitPath(pathStr)) do
+    for i = 1, n do
+        local seg = segs[i]
         if not current or seg == "" then return nil end
         local name, idx = seg, nil
         local base, num = seg:match("^(.*)%[(%d+)%]$")
@@ -252,6 +252,12 @@ local function ResolveSafePath(pathStr)
         return nil
     end
     return current
+end
+
+local function ResolveSafePath(pathStr)
+    if not pathStr or pathStr == "" then return nil end
+    local segs = SplitPath(pathStr)
+    return ResolveSegs(segs, #segs)
 end
 
 -- Kebalikannya: objek -> path (selalu bisa dibaca balik oleh ResolveSafePath)
@@ -281,6 +287,28 @@ PathTool.Of = function(obj)
         node = parent
     end
     return table.concat(parts, ".")
+end
+
+-- Objek lain yang "sejenis" dengan path ini: anak-anak container yang namanya sama dengan segmen terakhir.
+-- Dipakai mode Follow untuk pindah ke objek lain saat objek sekarang hilang.
+PathTool.Siblings = function(pathStr)
+    if not pathStr or pathStr == "" then return nil, {} end
+    local segs = SplitPath(pathStr)
+    if #segs < 2 then return nil, {} end
+    local last = segs[#segs]
+    local name = last:match("^(.*)%[%d+%]$") or last
+    local container = ResolveSegs(segs, #segs - 1)
+    if not container then return nil, {} end
+    -- "sejenis" = nama sama, atau nama sama setelah angka di ujung dibuang (Coin1, Coin_2 -> Coin)
+    local function Base(n) return (n:gsub("[%s_%-]*%d+$", "")) end
+    local base = Base(name)
+    local list = {}
+    for _, child in ipairs(container:GetChildren()) do
+        if child.Name == name or (base ~= "" and Base(child.Name) == base) then
+            table.insert(list, child)
+        end
+    end
+    return container, list
 end
 
 local function GetTargetPosition(targetObj)
@@ -313,6 +341,12 @@ ESP.Pos = function(obj)
     if obj:IsA("BasePart") then return obj.Position end
     if obj:IsA("Model") then return obj:GetPivot().Position end
     return GetTargetPosition(obj)
+end
+
+ESP.CF = function(obj)
+    if obj:IsA("BasePart") then return obj.CFrame end
+    if obj:IsA("Model") then return obj:GetPivot() end
+    return nil
 end
 
 ESP.EnsureGui = function()
@@ -699,6 +733,7 @@ ESP.MakeColorPicker = function(parent, pos, entry, canChange)
         end)
     end
 
+    picker.row = row
     picker.select = function(col) mark(col) end
     picker.dim = function(on)     -- Rainbow aktif -> swatch diredupkan
         for _, sw in ipairs(swatches) do
@@ -1563,10 +1598,11 @@ local function SetSlotButton(slotData, running)
     end
 end
 
-local function BuildQueue()
+local function BuildQueue(kind)
+    kind = kind or "collect"
     local pri, normal = {}, {}
     for _, s in ipairs(collectSlots) do
-        if s.active then
+        if s.active and s.kind == kind then
             if s.priority then
                 table.insert(pri, s)
             else
@@ -1581,6 +1617,172 @@ local function BuildQueue()
         table.insert(pri, s)
     end
     return pri
+end
+
+-- ==================================================
+-- MODE FOLLOW
+-- Karakter mengikuti objek terus-menerus menurut arah + Distance (stud).
+--   * Satu koneksi Heartbeat untuk SEMUA slot Follow; hanya ada selama minimal satu slot Follow aktif
+--   * Hanya satu slot yang memegang karakter: slot berbintang dulu, lalu yang paling dulu dimulai,
+--     dan hanya slot yang sedang punya objek
+--   * Objek hilang -> langsung pindah ke objek lain bernama sama di container yang sama (yang terdekat)
+--   * Tidak ada objek sama sekali -> kembali ke posisi semula (posisi saat Follow mulai memegang karakter)
+--   * Selama Follow memegang karakter, giliran Auto Collect dijeda
+-- ==================================================
+local Follow = {conn = nil, engaged = false, origin = nil, queue = {}, queueAt = 0, warned = false}
+
+local function FollowOffset(slot, tcf)
+    local d = slot.dir
+    local v = Vector3.zero
+    if d.vert == "up" then v += Vector3.yAxis elseif d.vert == "down" then v -= Vector3.yAxis end
+    -- arah mendatar mengikuti hadap objek (diratakan), Atas/Bawah selalu sumbu Y dunia
+    local lv = tcf.LookVector
+    local look = Vector3.new(lv.X, 0, lv.Z)
+    look = (look.Magnitude > 0.05) and look.Unit or Vector3.new(0, 0, -1)
+    local right = look:Cross(Vector3.yAxis)
+    if d.side == "right" then v += right elseif d.side == "left" then v -= right end
+    if d.depth == "front" then v += look elseif d.depth == "back" then v -= look end
+    if v.Magnitude < 0.001 then return Vector3.zero end
+    local dist = tonumber(slot.distBox.Text) or 5
+    return v.Unit * math.max(0, dist)
+end
+
+-- Objek yang diikuti slot ini; dicari ulang (maks 4x/detik) hanya bila objek lama sudah hilang
+local function FollowAcquire(s, rootPos, now)
+    local path = s.dexPath.Text
+    if path ~= s.followPath then
+        s.followPath = path
+        s.followTarget = nil
+        s.followNextScan = 0
+    end
+    local t = s.followTarget
+    if t and t:IsDescendantOf(game) and ESP.CF(t) then return t end
+    s.followTarget = nil
+    if now < (s.followNextScan or 0) then return nil end
+    s.followNextScan = now + 0.25
+
+    local cand = ResolveSafePath(path)
+    if not (cand and ESP.CF(cand)) then
+        cand = nil
+        local _, list = PathTool.Siblings(path)
+        local bestD = math.huge
+        for _, c in ipairs(list) do
+            local p = ESP.Pos(c)
+            if p then
+                local dd = (p - rootPos).Magnitude
+                if dd < bestD then
+                    cand, bestD = c, dd
+                end
+            end
+        end
+    end
+    s.followTarget = cand
+    return cand
+end
+
+local function FollowStep()
+    if hubDestroyed then return end
+    local root = GetHumanoidRootPart()
+    if not root then return end
+    local now = os.clock()
+    if now - Follow.queueAt > 0.2 then
+        Follow.queue = BuildQueue("follow")
+        Follow.queueAt = now
+    end
+
+    local leader, target
+    for _, s in ipairs(Follow.queue) do
+        if s.active then
+            local t = FollowAcquire(s, root.Position, now)
+            if t then
+                leader, target = s, t
+                break
+            end
+        end
+    end
+
+    if leader then
+        if not Follow.engaged then
+            Follow.engaged = true
+            Follow.origin = root.CFrame
+            if collectTween then pcall(function() collectTween:Cancel() end) end
+            NoclipAcquire("follow")
+        end
+        NoclipAcquire("follow")      -- idempoten; menjaga noclip tetap ada setelah respawn
+        local tcf = ESP.CF(target)
+        if tcf then
+            local pos = tcf.Position + FollowOffset(leader, tcf)
+            local flat = Vector3.new(tcf.Position.X - pos.X, 0, tcf.Position.Z - pos.Z)
+            if flat.Magnitude > 0.1 then
+                root.CFrame = CFrame.lookAt(pos, pos + flat)      -- menghadap objek (hanya mendatar)
+            else
+                root.CFrame = CFrame.new(pos) * root.CFrame.Rotation
+            end
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+        end
+    elseif Follow.engaged then
+        Follow.engaged = false
+        NoclipRelease("follow")
+        if Follow.origin then
+            root.CFrame = Follow.origin                           -- tidak ada objek -> kembali ke posisi semula
+            root.AssemblyLinearVelocity = Vector3.zero
+        end
+        Follow.origin = nil
+    end
+end
+
+local function FollowStartDriver()
+    if Follow.conn then return end
+    Follow.conn = RunService.Heartbeat:Connect(function()
+        local ok, err = pcall(FollowStep)
+        if not ok and not Follow.warned then
+            Follow.warned = true
+            print("[Follow] " .. tostring(err))
+        end
+    end)
+end
+
+local function FollowStopDriver()
+    if Follow.conn then
+        Follow.conn:Disconnect()
+        Follow.conn = nil
+    end
+    NoclipRelease("follow")
+    Follow.engaged = false
+    Follow.origin = nil
+    Follow.queue = {}
+end
+
+local function StartFollowSlot(s)
+    if hubDestroyed or s.active then return end
+    if s.dexPath.Text == "" then
+        print("[" .. s.nameBox.Text .. "] Isi path objek terlebih dahulu")
+        return
+    end
+    if not GetHumanoidRootPart() then
+        print("[" .. s.nameBox.Text .. "] Karakter tidak ditemukan")
+        return
+    end
+    collectStartCounter += 1
+    s.startOrder = collectStartCounter
+    s.active = true
+    s.followTarget, s.followNextScan, s.followPath = nil, 0, nil
+    Follow.queueAt = 0
+    SetSlotButton(s, true)
+    FollowStartDriver()
+end
+
+-- Berhenti = diam di tempat (tidak teleport balik); koneksi diputus bila tidak ada slot Follow aktif
+local function StopFollowSlot(s)
+    if not s or not s.active then return end
+    s.active = false
+    s.followTarget = nil
+    SetSlotButton(s, false)
+    for _, o in ipairs(collectSlots) do
+        if o.active and o.kind == "follow" then return end
+    end
+    FollowStopDriver()
 end
 
 local function StopCollectScheduler()
@@ -1608,7 +1810,7 @@ local function StopCollectSlot(slotData)
     end
     local anyActive = false
     for _, s in ipairs(collectSlots) do
-        if s.active then anyActive = true break end
+        if s.active and s.kind == "collect" then anyActive = true break end
     end
     if not anyActive then
         StopCollectScheduler()
@@ -1619,10 +1821,32 @@ local function StopCollectAll()
     for _, s in ipairs(collectSlots) do
         if s.active then
             s.active = false
+            s.followTarget = nil
             SetSlotButton(s, false)
         end
     end
     StopCollectScheduler()
+    FollowStopDriver()
+end
+
+-- Hanya slot mode Collect (dipakai saat scheduler Collect selesai; slot Follow tidak ikut berhenti)
+local function StopCollectKind()
+    for _, s in ipairs(collectSlots) do
+        if s.active and s.kind == "collect" then
+            s.active = false
+            SetSlotButton(s, false)
+        end
+    end
+    StopCollectScheduler()
+end
+
+-- Berhenti / mulai sesuai mode slot
+local function StopSlot(s)
+    if s.kind == "follow" then
+        StopFollowSlot(s)
+    else
+        StopCollectSlot(s)
+    end
 end
 
 -- Satu langkah: pergi ke target milik satu slot
@@ -1682,13 +1906,17 @@ local function EnsureCollectScheduler()
                 for _, s in ipairs(queue) do
                     if hubDestroyed then break end
                     if s.active then
-                        collectStepSlot = s
-                        RunCollectStep(s)
-                        collectStepSlot = nil
-                        if s.active then
-                            local d = tonumber(s.delayBox.Text)
-                            if d == nil or d < 0 or d > 30 then d = 0.5 end
-                            task.wait(d)
+                        if Follow.engaged then
+                            task.wait(0.1)          -- Follow sedang memegang karakter: Collect dijeda
+                        else
+                            collectStepSlot = s
+                            RunCollectStep(s)
+                            collectStepSlot = nil
+                            if s.active then
+                                local d = tonumber(s.delayBox.Text)
+                                if d == nil or d < 0 or d > 30 then d = 0.5 end
+                                task.wait(d)
+                            end
                         end
                     end
                 end
@@ -1697,7 +1925,7 @@ local function EnsureCollectScheduler()
         if not ok then
             print("[Collect] Error Runtime: " .. tostring(err))
         end
-        StopCollectAll()
+        StopCollectKind()
     end)
 end
 
@@ -1718,6 +1946,14 @@ local function StartCollectSlot(slotData)
     EnsureCollectScheduler()
 end
 
+local function StartSlot(s)
+    if s.kind == "follow" then
+        StartFollowSlot(s)
+    else
+        StartCollectSlot(s)
+    end
+end
+
 local function QueueText()
     local q = BuildQueue()
     if #q == 0 then return "-" end
@@ -1728,14 +1964,15 @@ local function QueueText()
     return table.concat(parts, " > ") .. "  ↻"
 end
 
--- ========== FUNGSI BUAT SLOT COLLECT ==========
+-- ========== FUNGSI BUAT SLOT (MODE COLLECT / FOLLOW) ==========
 local function CreateCollectSlot()
     collectSlotCount += 1
     local slotId = collectSlotCount
+    local H_COLLECT, H_FOLLOW = 224, 340
 
     local SlotWrapper = Instance.new("Frame")
     SlotWrapper.Parent = CollectScrollFrame
-    SlotWrapper.Size = UDim2.new(1, -12, 0, 224)
+    SlotWrapper.Size = UDim2.new(1, -12, 0, H_COLLECT)
     SlotWrapper.BackgroundColor3 = HEADER_BG
     SlotWrapper.LayoutOrder = slotId
     local UICornerSlotW = Instance.new("UICorner")
@@ -1751,7 +1988,7 @@ local function CreateCollectSlot()
     UICornerSlotH.CornerRadius = UDim.new(0, 5)
     UICornerSlotH.Parent = SlotHeader
 
-    -- ★ Bintang prioritas (kiri atas slot)
+    -- Header: Star | Mode | Nama | Minimize | Lock | X
     local StarBtn = Instance.new("TextButton")
     StarBtn.Parent = SlotHeader
     StarBtn.Size = UDim2.new(0, 22, 0, 22)
@@ -1767,10 +2004,25 @@ local function CreateCollectSlot()
     UICornerStar.CornerRadius = UDim.new(0, 4)
     UICornerStar.Parent = StarBtn
 
+    local ModeSwitchBtn = Instance.new("TextButton")
+    ModeSwitchBtn.Parent = SlotHeader
+    ModeSwitchBtn.Size = UDim2.new(0, 54, 0, 22)
+    ModeSwitchBtn.Position = UDim2.new(0, 30, 0.5, -11)
+    ModeSwitchBtn.BackgroundColor3 = BTN_ORANGE
+    ModeSwitchBtn.Text = "Collect"
+    ModeSwitchBtn.TextColor3 = Color3.new(1, 1, 1)
+    ModeSwitchBtn.Font = Enum.Font.GothamBold
+    ModeSwitchBtn.TextSize = 8
+    ModeSwitchBtn.AutoLocalize = false
+    ModeSwitchBtn.AutoButtonColor = false
+    local UICornerModeSw = Instance.new("UICorner")
+    UICornerModeSw.CornerRadius = UDim.new(0, 4)
+    UICornerModeSw.Parent = ModeSwitchBtn
+
     local SlotNameBox = Instance.new("TextBox")
     SlotNameBox.Parent = SlotHeader
-    SlotNameBox.Size = UDim2.new(1, -116, 1, -4)
-    SlotNameBox.Position = UDim2.new(0, 30, 0, 2)
+    SlotNameBox.Size = UDim2.new(1, -174, 1, -4)
+    SlotNameBox.Position = UDim2.new(0, 88, 0, 2)
     SlotNameBox.BackgroundColor3 = INPUT_BG
     SlotNameBox.Text = "Collect Slot #" .. tostring(slotId)
     SlotNameBox.TextColor3 = TEXT_DARK
@@ -1843,6 +2095,7 @@ local function CreateCollectSlot()
     UICornerDex.CornerRadius = UDim.new(0, 4)
     UICornerDex.Parent = DexPathBox
 
+    -- Khusus Collect: Mode TP/TW
     local ModeBtn = Instance.new("TextButton")
     ModeBtn.Parent = SlotContent
     ModeBtn.Size = UDim2.new(0.38, 0, 0, 22)
@@ -1856,6 +2109,7 @@ local function CreateCollectSlot()
     UICornerMode.CornerRadius = UDim.new(0, 4)
     UICornerMode.Parent = ModeBtn
 
+    -- Khusus Collect: D / <Y
     local DLabel = Instance.new("TextLabel")
     DLabel.Parent = SlotContent
     DLabel.Size = UDim2.new(0.05, 0, 0, 18)
@@ -1946,14 +2200,66 @@ local function CreateCollectSlot()
     UICornerScan.CornerRadius = UDim.new(0, 4)
     UICornerScan.Parent = ScanPosBtn
 
+    -- Khusus Follow: arah karakter terhadap objek + Distance
+    local DirLabel = Instance.new("TextLabel")
+    DirLabel.Parent = SlotContent
+    DirLabel.Size = UDim2.new(1, 0, 0, 14)
+    DirLabel.Position = UDim2.new(0, 0, 0, 52)
+    DirLabel.BackgroundTransparency = 1
+    DirLabel.Text = "Arah Karakter kepada Objek:"
+    DirLabel.TextColor3 = TEXT_DARK
+    DirLabel.Font = Enum.Font.GothamBold
+    DirLabel.TextSize = 9
+    DirLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local DistLabel = Instance.new("TextLabel")
+    DistLabel.Parent = SlotContent
+    DistLabel.Size = UDim2.new(0.2, 0, 0, 20)
+    DistLabel.Position = UDim2.new(0, 0, 0, 142)
+    DistLabel.BackgroundTransparency = 1
+    DistLabel.Text = "Distance:"
+    DistLabel.TextColor3 = TEXT_DARK
+    DistLabel.Font = Enum.Font.GothamBold
+    DistLabel.TextSize = 9
+    DistLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local DistBox = Instance.new("TextBox")
+    DistBox.Parent = SlotContent
+    DistBox.Size = UDim2.new(0.22, 0, 0, 20)
+    DistBox.Position = UDim2.new(0.21, 0, 0, 142)
+    DistBox.BackgroundColor3 = INPUT_BG
+    DistBox.Text = "5"
+    DistBox.PlaceholderText = "5"
+    DistBox.TextColor3 = TEXT_DARK
+    DistBox.Font = Enum.Font.Gotham
+    DistBox.TextSize = 9
+    DistBox.ClearTextOnFocus = false
+    DistBox.PlaceholderColor3 = PLACEHOLDER
+    local UICornerDist = Instance.new("UICorner")
+    UICornerDist.CornerRadius = UDim.new(0, 4)
+    UICornerDist.Parent = DistBox
+
+    local DistUnit = Instance.new("TextLabel")
+    DistUnit.Parent = SlotContent
+    DistUnit.Size = UDim2.new(0.12, 0, 0, 20)
+    DistUnit.Position = UDim2.new(0.45, 0, 0, 142)
+    DistUnit.BackgroundTransparency = 1
+    DistUnit.Text = "stud"
+    DistUnit.TextColor3 = TEXT_DARK
+    DistUnit.Font = Enum.Font.GothamBold
+    DistUnit.TextSize = 9
+    DistUnit.TextXAlignment = Enum.TextXAlignment.Left
+
     local slotData = {
         id = slotId,
+        kind = "collect",            -- "collect" | "follow"
         wrapper = SlotWrapper,
         content = SlotContent,
         nameBox = SlotNameBox,
         dexPath = DexPathBox,
         delayBox = DelayBox,
         yLimitBox = YLimitBox,
+        distBox = DistBox,
         modeBtn = ModeBtn,
         resetBtn = ResetBtn,
         startStopBtn = StartStopBtn,
@@ -1968,10 +2274,12 @@ local function CreateCollectSlot()
         priority = false,
         startOrder = 0,
         mode = "teleport",
+        dir = {vert = "up", side = nil, depth = nil},
+        dirToggles = {},
     }
     table.insert(collectSlots, slotData)
 
-    -- ===== ESP Objek slot ini (memakai Path Objek slot) =====
+    -- ===== ESP Objek slot ini (memakai Path Objek slot; dipakai kedua mode) =====
     local EspLabel = Instance.new("TextLabel")
     EspLabel.Parent = SlotContent
     EspLabel.Size = UDim2.new(1, 0, 0, 14)
@@ -2004,6 +2312,31 @@ local function CreateCollectSlot()
         slotData.espPicker.dim(on)
     end)
 
+    -- ===== Arah Follow: tiap pasangan saling meniadakan (boleh digabung antar pasangan, mis. Atas + Belakang) =====
+    local function DirToggle(key, text, field, value, mate, x, y)
+        slotData.dirToggles[key] = ESP.MakeToggle(SlotContent, text, UDim2.new(0.49, 0, 0, 20), UDim2.new(x, 0, 0, y), function(on)
+            if slotData.locked then return false end
+            slotData.dir[field] = on and value or nil
+            if on and slotData.dirToggles[mate] then
+                slotData.dirToggles[mate].set(false)
+            end
+        end)
+    end
+    DirToggle("up", "Atas", "vert", "up", "down", 0, 68)
+    DirToggle("down", "Bawah", "vert", "down", "up", 0.51, 68)
+    DirToggle("left", "Kiri", "side", "left", "right", 0, 92)
+    DirToggle("right", "Kanan", "side", "right", "left", 0.51, 92)
+    DirToggle("front", "Depan", "depth", "front", "back", 0, 116)
+    DirToggle("back", "Belakang", "depth", "back", "front", 0.51, 116)
+    slotData.dirToggles.up.set(true)   -- bawaan: di atas objek
+
+    local function ResetDirections()
+        slotData.dir.vert, slotData.dir.side, slotData.dir.depth = "up", nil, nil
+        for key, tg in pairs(slotData.dirToggles) do
+            tg.set(key == "up")
+        end
+    end
+
     local function UpdateStar()
         if slotData.priority then
             StarBtn.Text = "★"
@@ -2013,6 +2346,126 @@ local function CreateCollectSlot()
             StarBtn.BackgroundColor3 = UNLOCK_COLOR
         end
     end
+
+    local function UpdateModeBtn()
+        if slotData.kind == "follow" then
+            ModeSwitchBtn.Text = "Follow"
+            ModeSwitchBtn.BackgroundColor3 = BTN_BLUE
+        else
+            ModeSwitchBtn.Text = "Collect"
+            ModeSwitchBtn.BackgroundColor3 = BTN_ORANGE
+        end
+    end
+
+    -- Susun ulang isi slot sesuai mode
+    --   Collect : Pindai | Path + TP/TW | ESP | Warna | Rainbow | D, <Y, Reset, Mulai
+    --   Follow  : Pindai | Path | Arah (3 baris) | Distance | ESP | Warna | Rainbow | Reset, Mulai
+    local function ApplyLayout()
+        local f = (slotData.kind == "follow")
+        ModeBtn.Visible = not f
+        DLabel.Visible = not f
+        DelayBox.Visible = not f
+        YLabel.Visible = not f
+        YLimitBox.Visible = not f
+        DirLabel.Visible = f
+        for _, tg in pairs(slotData.dirToggles) do tg.btn.Visible = f end
+        DistLabel.Visible = f
+        DistBox.Visible = f
+        DistUnit.Visible = f
+
+        DexPathBox.Size = f and UDim2.new(1, 0, 0, 22) or UDim2.new(0.60, 0, 0, 22)
+
+        local y = f and 168 or 52          -- blok ESP turun di mode Follow
+        EspLabel.Position = UDim2.new(0, 0, 0, y)
+        slotData.espToggles.tracer.btn.Position = UDim2.new(0, 0, 0, y + 16)
+        slotData.espToggles.highlight.btn.Position = UDim2.new(0.51, 0, 0, y + 16)
+        slotData.espToggles.name.btn.Position = UDim2.new(0, 0, 0, y + 40)
+        slotData.espToggles.box.btn.Position = UDim2.new(0.51, 0, 0, y + 40)
+        slotData.espPicker.row.Position = UDim2.new(0, 0, 0, y + 64)
+        slotData.espToggles.rainbow.btn.Position = UDim2.new(0, 0, 0, y + 90)
+
+        local by = y + 116
+        DLabel.Position = UDim2.new(0, 0, 0, by)
+        DelayBox.Position = UDim2.new(0.06, 0, 0, by)
+        YLabel.Position = UDim2.new(0.18, 0, 0, by)
+        YLimitBox.Position = UDim2.new(0.26, 0, 0, by)
+        if f then
+            ResetBtn.Size = UDim2.new(0.30, 0, 0, 18)
+            ResetBtn.Position = UDim2.new(0, 0, 0, by)
+            StartStopBtn.Size = UDim2.new(0.68, 0, 0, 18)
+            StartStopBtn.Position = UDim2.new(0.32, 0, 0, by)
+        else
+            ResetBtn.Size = UDim2.new(0.16, 0, 0, 18)
+            ResetBtn.Position = UDim2.new(0.42, 0, 0, by)
+            StartStopBtn.Size = UDim2.new(0.38, 0, 0, 18)
+            StartStopBtn.Position = UDim2.new(0.60, 0, 0, by)
+        end
+
+        UpdateModeBtn()
+        if not slotData.minimized then
+            SlotWrapper.Size = UDim2.new(1, -12, 0, f and H_FOLLOW or H_COLLECT)
+        end
+    end
+
+    -- Kembalikan semua isian ke bawaan (dipakai RESET dan pergantian mode)
+    local function ResetFields()
+        StopSlot(slotData)
+        DexPathBox.Text = ""
+        DelayBox.Text = "0.5"
+        YLimitBox.Text = ""
+        DistBox.Text = "5"
+        slotData.mode = "teleport"
+        ModeBtn.Text = "MODE: TELEPORT"
+        ResetDirections()
+        slotData.priority = false
+        UpdateStar()
+        for _, tg in pairs(slotData.espToggles) do tg.set(false) end
+        ESP.SetAll(slotData.espEntry, false)
+        ESP.SetRainbow(slotData.espEntry, false)
+        ESP.SetColor(slotData.espEntry, ESP.COLORS[1])
+        slotData.espPicker.select(ESP.COLORS[1])
+        slotData.espPicker.dim(false)
+    end
+
+    -- Nama bawaan ikut mode (nama yang sudah kamu ubah sendiri tidak ditimpa)
+    local function RenameForKind()
+        local cur = SlotNameBox.Text
+        if cur:match("^Collect Slot #%d+$") or cur:match("^Follow Slot #%d+$") then
+            SlotNameBox.Text = ((slotData.kind == "follow") and "Follow" or "Collect") .. " Slot #" .. slotId
+        end
+    end
+
+    local switchThread = nil
+    local function DoSwitch()
+        ResetFields()
+        slotData.kind = (slotData.kind == "collect") and "follow" or "collect"
+        RenameForKind()
+        ApplyLayout()
+    end
+
+    -- Ada isian di textbox -> minta konfirmasi "Sure? [5]"; tekan lagi dalam 5 detik untuk lanjut
+    ModeSwitchBtn.MouseButton1Click:Connect(function()
+        if slotData.locked then return end
+        if switchThread then
+            pcall(task.cancel, switchThread)
+            switchThread = nil
+            DoSwitch()
+            return
+        end
+        if DexPathBox.Text == "" and YLimitBox.Text == "" then
+            DoSwitch()
+            return
+        end
+        ModeSwitchBtn.BackgroundColor3 = BTN_RED
+        switchThread = task.spawn(function()
+            for sisa = 5, 1, -1 do
+                ModeSwitchBtn.Text = "Sure? [" .. sisa .. "]"
+                task.wait(1)
+            end
+            switchThread = nil
+            UpdateModeBtn()
+        end)
+    end)
 
     StarBtn.MouseButton1Click:Connect(function()
         if slotData.locked then return end
@@ -2048,30 +2501,16 @@ local function CreateCollectSlot()
         end)
     end)
 
-    -- RESET: hentikan slot lalu kembalikan semua isian ke bawaan (termasuk bintang)
     ResetBtn.MouseButton1Click:Connect(function()
         if slotData.locked then return end
-        StopCollectSlot(slotData)
-        DexPathBox.Text = ""
-        DelayBox.Text = "0.5"
-        YLimitBox.Text = ""
-        slotData.mode = "teleport"
-        ModeBtn.Text = "MODE: TELEPORT"
-        slotData.priority = false
-        UpdateStar()
-        for _, tg in pairs(slotData.espToggles) do tg.set(false) end
-        ESP.SetAll(slotData.espEntry, false)
-        ESP.SetRainbow(slotData.espEntry, false)
-        ESP.SetColor(slotData.espEntry, ESP.COLORS[1])
-        slotData.espPicker.select(ESP.COLORS[1])
-        slotData.espPicker.dim(false)
+        ResetFields()
     end)
 
     StartStopBtn.MouseButton1Click:Connect(function()
         if slotData.active then
-            StopCollectSlot(slotData)
+            StopSlot(slotData)
         else
-            StartCollectSlot(slotData)
+            StartSlot(slotData)
         end
     end)
 
@@ -2089,6 +2528,7 @@ local function CreateCollectSlot()
         DexPathBox.TextEditable = editable
         DelayBox.TextEditable = editable
         YLimitBox.TextEditable = editable
+        DistBox.TextEditable = editable
     end)
 
     SlotMinBtn.MouseButton1Click:Connect(function()
@@ -2100,12 +2540,16 @@ local function CreateCollectSlot()
         else
             SlotMinBtn.Text = "−"
             SlotContent.Visible = true
-            SlotWrapper.Size = UDim2.new(1, -12, 0, 224)
+            SlotWrapper.Size = UDim2.new(1, -12, 0, (slotData.kind == "follow") and H_FOLLOW or H_COLLECT)
         end
     end)
 
     SlotDestroyBtn.MouseButton1Click:Connect(function()
-        StopCollectSlot(slotData)
+        if switchThread then
+            pcall(task.cancel, switchThread)
+            switchThread = nil
+        end
+        StopSlot(slotData)
         for i, v in ipairs(collectSlots) do
             if v.id == slotData.id then
                 table.remove(collectSlots, i)
@@ -2116,6 +2560,7 @@ local function CreateCollectSlot()
         SlotWrapper:Destroy()
     end)
 
+    ApplyLayout()
     return slotData
 end
 
@@ -3382,13 +3827,19 @@ task.spawn(function()
         for _, sd in ipairs(slots) do
             if sd.active then remoteActive += 1 end
         end
-        local collectActive = 0
+        local collectN, collectActive, followN, followActive = 0, 0, 0, 0
         for _, s in ipairs(collectSlots) do
-            if s.active then collectActive += 1 end
+            if s.kind == "follow" then
+                followN += 1
+                if s.active then followActive += 1 end
+            else
+                collectN += 1
+                if s.active then collectActive += 1 end
+            end
         end
         HomeStatus.Text = string.format(
-            "Slot Remote: %d (aktif: %d)\nSlot Collect: %d (aktif: %d)\nAntrean Collect: %s\nTitik Teleport: %d | Auto Farm: %s",
-            #slots, remoteActive, #collectSlots, collectActive, QueueText(),
+            "Slot Remote: %d (aktif: %d)\nSlot Collect: %d (aktif: %d) | Follow: %d (aktif: %d)\nAntrean Collect: %s\nTitik Teleport: %d | Auto Farm: %s",
+            #slots, remoteActive, collectN, collectActive, followN, followActive, QueueText(),
             #TP.points, TP.farmActive and "AKTIF" or "mati"
         )
         task.wait(0.5)
@@ -3497,6 +3948,7 @@ Track(LocalPlayer.CharacterAdded:Connect(function()
         pcall(function() collectTween:Cancel() end)
     end
     NoclipReset()
+    Follow.engaged, Follow.origin = false, nil     -- karakter baru: posisi semula yang lama tidak berlaku lagi
     if TP.onRespawn then TP.onRespawn() end
 end))
 
