@@ -463,8 +463,8 @@ end
 ESP.MAX_ITEMS = 30   -- batas objek per entri (Highlight Roblox maks ±31; juga menjaga performa)
 ESP.ITEM_KEYS = {"tracerLine", "nameLabel", "hl", "sb"}
 
-ESP.NewEntry = function(getPath)
-    local e = {getPath = getPath, lastPath = nil, nextResolve = 0,
+ESP.NewEntry = function(getPath, getLabel)
+    local e = {getPath = getPath, getLabel = getLabel, lastPath = nil, nextResolve = 0,
         color = ORANGE, rainbow = false, applied = nil,
         f = {tracer = false, name = false, highlight = false, box = false},
         items = {}}
@@ -650,7 +650,9 @@ ESP.UpdateEntry = function(e, cam, vp, origin, now, rainbow)
                     label.Position = UDim2.fromOffset(x, y)
                     if now >= item.nextText then
                         item.nextText = now + 0.1
-                        label.Text = string.format("%s [%dm]", o.Name, math.floor((pos - origin).Magnitude + 0.5))
+                        local custom = e.getLabel and e.getLabel()      -- mis. nama slot
+                        if custom == nil or custom == "" then custom = o.Name end
+                        label.Text = string.format("%s [%dm]", custom, math.floor((pos - origin).Magnitude + 0.5))
                     end
                     label.Visible = true
                 else
@@ -2202,7 +2204,7 @@ end
 local function CreateCollectSlot()
     collectSlotCount += 1
     local slotId = collectSlotCount
-    local H_COLLECT, H_FOLLOW = 224, 340
+    local H_COLLECT, H_FOLLOW = 250, 366
 
     local SlotWrapper = Instance.new("Frame")
     SlotWrapper.Parent = CollectScrollFrame
@@ -2309,8 +2311,8 @@ local function CreateCollectSlot()
 
     local SlotContent = Instance.new("Frame")
     SlotContent.Parent = SlotWrapper
-    SlotContent.Size = UDim2.new(1, -6, 1, -34)
-    SlotContent.Position = UDim2.new(0, 3, 0, 32)
+    SlotContent.Size = UDim2.new(1, -6, 1, -60)
+    SlotContent.Position = UDim2.new(0, 3, 0, 58)
     SlotContent.BackgroundTransparency = 1
 
     local DexPathBox = Instance.new("TextBox")
@@ -2525,8 +2527,16 @@ local function CreateCollectSlot()
     EspLabel.TextSize = 9
     EspLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-    slotData.espEntry = ESP.NewEntry(function() return DexPathBox.Text end)
+    slotData.useSlotName = false
+    slotData.espEntry = ESP.NewEntry(function() return DexPathBox.Text end, function()
+        if slotData.useSlotName then return SlotNameBox.Text end   -- nama ESP = nama slot
+        return nil
+    end)
     slotData.espToggles = {}
+    slotData.nameToggle = ESP.MakeToggle(SlotWrapper, "Nama Objek sesuai Nama Slot", UDim2.new(1, -6, 0, 20), UDim2.new(0, 3, 0, 34), function(on)
+        if slotData.locked then return false end
+        slotData.useSlotName = on
+    end)
     local function EspToggle(key, text, x, y)
         slotData.espToggles[key] = ESP.MakeToggle(SlotContent, text, UDim2.new(0.49, 0, 0, 20), UDim2.new(x, 0, 0, y), function(on)
             if slotData.locked then return false end
@@ -2654,6 +2664,8 @@ local function CreateCollectSlot()
         slotData.priority = false
         UpdateStar()
         for _, tg in pairs(slotData.espToggles) do tg.set(false) end
+        slotData.useSlotName = false
+        slotData.nameToggle.set(false)
         ESP.SetAll(slotData.espEntry, false)
         ESP.SetRainbow(slotData.espEntry, false)
         ESP.SetColor(slotData.espEntry, ESP.COLORS[1])
@@ -2770,10 +2782,12 @@ local function CreateCollectSlot()
         if slotData.minimized then
             SlotMinBtn.Text = "+"
             SlotContent.Visible = false
+            slotData.nameToggle.btn.Visible = false
             SlotWrapper.Size = UDim2.new(1, -12, 0, 36)
         else
             SlotMinBtn.Text = "−"
             SlotContent.Visible = true
+            slotData.nameToggle.btn.Visible = true
             SlotWrapper.Size = UDim2.new(1, -12, 0, (slotData.kind == "follow") and H_FOLLOW or H_COLLECT)
         end
     end)
