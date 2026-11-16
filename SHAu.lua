@@ -1966,6 +1966,38 @@ local function FollowStopDriver()
     Follow.queue = {}
 end
 
+-- ===== POSISI AWAL SESI AUTO COLLECT =====
+-- Saat slot pertama (Collect maupun Follow) mulai berjalan, posisi karakter dicatat.
+-- Saat slot terakhir berhenti (tombol Berhenti, Berhenti Semua, Reset, ganti mode, hapus slot, atau error),
+-- karakter dikembalikan ke posisi itu + 2 stud ke atas. Tidak dikembalikan saat hub ditutup (X).
+local AutoSession = {origin = nil}
+
+local function AnySlotActive()
+    for _, o in ipairs(collectSlots) do
+        if o.active then return true end
+    end
+    return false
+end
+
+local function SessionBegin()
+    if AutoSession.origin then return end
+    local root = GetHumanoidRootPart()
+    if root then AutoSession.origin = root.CFrame end
+end
+
+local function SessionEnd()
+    if AnySlotActive() then return end          -- masih ada slot lain yang berjalan
+    local origin = AutoSession.origin
+    AutoSession.origin = nil
+    if origin and not hubDestroyed then
+        local root = GetHumanoidRootPart()
+        if root then
+            root.CFrame = origin + Vector3.new(0, 2, 0)
+            root.AssemblyLinearVelocity = Vector3.zero
+        end
+    end
+end
+
 local function StartFollowSlot(s)
     if hubDestroyed or s.active then return end
     if s.dexPath.Text == "" then
@@ -1976,6 +2008,7 @@ local function StartFollowSlot(s)
         print("[" .. s.nameBox.Text .. "] Karakter tidak ditemukan")
         return
     end
+    SessionBegin()
     collectStartCounter += 1
     s.startOrder = collectStartCounter
     s.active = true
@@ -1985,16 +2018,21 @@ local function StartFollowSlot(s)
     FollowStartDriver()
 end
 
--- Berhenti = diam di tempat (tidak teleport balik); koneksi diputus bila tidak ada slot Follow aktif
+-- Berhenti: koneksi diputus bila tidak ada slot Follow aktif; bila tak ada slot aktif sama sekali, kembali ke posisi awal sesi (+2 stud)
 local function StopFollowSlot(s)
     if not s or not s.active then return end
     s.active = false
     s.followTarget = nil
     SetSlotButton(s, false)
+    local otherFollow = false
     for _, o in ipairs(collectSlots) do
-        if o.active and o.kind == "follow" then return end
+        if o.active and o.kind == "follow" then
+            otherFollow = true
+            break
+        end
     end
-    FollowStopDriver()
+    if not otherFollow then FollowStopDriver() end
+    SessionEnd()
 end
 
 local function StopCollectScheduler()
@@ -2027,6 +2065,7 @@ local function StopCollectSlot(slotData)
     if not anyActive then
         StopCollectScheduler()
     end
+    SessionEnd()
 end
 
 local function StopCollectAll()
@@ -2039,6 +2078,7 @@ local function StopCollectAll()
     end
     StopCollectScheduler()
     FollowStopDriver()
+    SessionEnd()
 end
 
 -- Hanya slot mode Collect (dipakai saat scheduler Collect selesai; slot Follow tidak ikut berhenti)
@@ -2050,6 +2090,7 @@ local function StopCollectKind()
         end
     end
     StopCollectScheduler()
+    SessionEnd()
 end
 
 -- Berhenti / mulai sesuai mode slot
@@ -2174,6 +2215,7 @@ local function StartCollectSlot(slotData)
         print("[Collect Slot " .. slotData.id .. "] Karakter tidak ditemukan")
         return
     end
+    SessionBegin()
     collectStartCounter += 1
     slotData.startOrder = collectStartCounter
     slotData.visited = nil
@@ -3661,8 +3703,23 @@ do
         return ok and true or false
     end
 
-    -- Hentikan semua perpindahan + Auto Farm, diam di posisi sekarang
-    StopTeleport = function()
+    -- Kembali ke posisi saat Auto Farm dimulai, + 2 stud ke atas (sekali pakai)
+    local function ReturnToFarmOrigin()
+        local origin = TP.farmOrigin
+        TP.farmOrigin = nil
+        if origin and not hubDestroyed then
+            local root = GetHumanoidRootPart()
+            if root then
+                root.CFrame = origin + Vector3.new(0, 2, 0)
+                root.AssemblyLinearVelocity = Vector3.zero
+            end
+        end
+    end
+
+    -- Hentikan semua perpindahan + Auto Farm. Jika Auto Farm sedang berjalan, karakter kembali ke posisi awalnya (+2 stud).
+    -- noReturn = true dipakai saat perintah manual menggantikan Auto Farm (tidak perlu kembali dulu).
+    StopTeleport = function(noReturn)
+        local wasFarm = TP.farmActive
         if TP.tween then
             pcall(function() TP.tween:Cancel() end)
             TP.tween = nil
@@ -3681,10 +3738,15 @@ do
         UpdateFarmBtn()
         SetNoclip(false)
         SetBusy(false)
+        if wasFarm and not noReturn then
+            ReturnToFarmOrigin()
+        elseif noReturn then
+            TP.farmOrigin = nil
+        end
     end
 
     local function RunManual(cf, mode, speed, lift)
-        StopTeleport()   -- perintah manual menggantikan gerakan sebelumnya
+        StopTeleport(true)   -- perintah manual menggantikan gerakan sebelumnya
         TP.manualThread = task.spawn(function()
             MoveTo(cf, mode, speed, lift)
             TP.manualThread = nil
@@ -3885,8 +3947,10 @@ do
             task.delay(1.2, UpdateFarmBtn)
             return
         end
-        if not GetHumanoidRootPart() then return end
+        local startRoot = GetHumanoidRootPart()
+        if not startRoot then return end
 
+        TP.farmOrigin = startRoot.CFrame      -- posisi awal (kembali ke sini + 2 stud saat berhenti)
         TP.farmActive = true
         UpdateFarmBtn()
         TP.farmThread = task.spawn(function()
@@ -3902,6 +3966,7 @@ do
             TP.farmActive = false
             TP.farmThread = nil
             UpdateFarmBtn()
+            ReturnToFarmOrigin()              -- selesai sendiri (mis. urutan kosong) -> kembali juga
         end)
     end
 
