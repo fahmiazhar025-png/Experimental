@@ -254,9 +254,70 @@ local function ResolveSegs(segs, n)
     return current
 end
 
+-- Path dengan wildcard: Nama[*] = SEMUA anak yang bernama "Nama" (mis. Workspace.Lobby.Decor.Palm[*].Trunk[*])
+local function HasWild(segs)
+    for _, seg in ipairs(segs) do
+        if seg:match("%[%*%]$") then return true end
+    end
+    return false
+end
+
+local MAX_MATCH = 1000   -- batas pengaman jumlah objek yang dicakup satu path
+local function ResolveAll(pathStr)
+    local out = {}
+    if not pathStr or pathStr == "" then return out end
+    local segs = SplitPath(pathStr)
+    if not HasWild(segs) then
+        local one = ResolveSegs(segs, #segs)
+        if one then out[1] = one end
+        return out
+    end
+    local current = {game}
+    for i = 1, #segs do
+        local seg = segs[i]
+        if seg == "" then return out end
+        local wildName = seg:match("^(.*)%[%*%]$")
+        local base, num = seg:match("^(.*)%[(%d+)%]$")
+        local nxt = {}
+        for _, parent in ipairs(current) do
+            if wildName then
+                for _, child in ipairs(parent:GetChildren()) do
+                    if child.Name == wildName then
+                        nxt[#nxt + 1] = child
+                        if #nxt >= MAX_MATCH then break end
+                    end
+                end
+            elseif base then
+                local want, count = tonumber(num), 0
+                for _, child in ipairs(parent:GetChildren()) do
+                    if child.Name == base then
+                        count += 1
+                        if count == want then
+                            nxt[#nxt + 1] = child
+                            break
+                        end
+                    end
+                end
+            else
+                local c = parent:FindFirstChild(seg)
+                if c then nxt[#nxt + 1] = c end
+            end
+            if #nxt >= MAX_MATCH then break end
+        end
+        current = nxt
+        if #current == 0 then return out end
+    end
+    for _, o in ipairs(current) do
+        if o:IsDescendantOf(game) then out[#out + 1] = o end
+    end
+    return out
+end
+
+-- Satu objek (path biasa) / objek pertama (path wildcard)
 local function ResolveSafePath(pathStr)
     if not pathStr or pathStr == "" then return nil end
     local segs = SplitPath(pathStr)
+    if HasWild(segs) then return ResolveAll(pathStr)[1] end
     return ResolveSegs(segs, #segs)
 end
 
@@ -279,7 +340,7 @@ PathTool.Of = function(obj)
                 end
             end
             -- nomor urut dipakai bila nama ganda, atau bila nama sendiri berakhiran [angka]
-            if count > 1 or name:match("%[%d+%]$") then idx = pos end
+            if count > 1 or name:match("%[%d+%]$") or name:match("%[%*%]$") then idx = pos end
         end
         local esc = name:gsub("\\", "\\\\"):gsub("%.", "\\.")
         if idx then esc = esc .. "[" .. idx .. "]" end
@@ -287,6 +348,38 @@ PathTool.Of = function(obj)
         node = parent
     end
     return table.concat(parts, ".")
+end
+
+-- Path KELOMPOK: setiap tingkat yang punya beberapa anak bernama sama ditulis Nama[*] (semua yang serupa),
+-- sehingga satu path mencakup seluruh objek serupa (mis. semua Trunk di semua Palm).
+-- Mengembalikan path dan jumlah tingkat yang memakai [*].
+PathTool.Group = function(obj)
+    if not obj or obj == game or not obj:IsDescendantOf(game) then return nil, 0 end
+    local parts, wild = {}, 0
+    local node = obj
+    while node and node ~= game do
+        local name = node.Name
+        local parent = node.Parent
+        local count, pos = 0, nil
+        if parent then
+            for _, child in ipairs(parent:GetChildren()) do
+                if child.Name == name then
+                    count += 1
+                    if child == node then pos = count end
+                end
+            end
+        end
+        local esc = name:gsub("\\", "\\\\"):gsub("%.", "\\.")
+        if count > 1 then
+            esc = esc .. "[*]"
+            wild += 1
+        elseif name:match("%[%d+%]$") or name:match("%[%*%]$") then
+            esc = esc .. "[" .. (pos or 1) .. "]"
+        end
+        table.insert(parts, 1, esc)
+        node = parent
+    end
+    return table.concat(parts, "."), wild
 end
 
 -- Objek lain yang "sejenis" dengan path ini: anak-anak container yang namanya sama dengan segmen terakhir.
@@ -364,11 +457,126 @@ ESP.EnsureGui = function()
     ESP.gui, ESP.folder = g, f
 end
 
+-- Satu entri bisa mencakup BANYAK objek (path dengan Nama[*]); tiap objek punya "item" sendiri
+-- (garis, label, Highlight, SelectionBox). Item dibuat saat objek muncul dan dibuang saat objek hilang,
+-- saat fitur dimatikan, saat entri dihapus, dan saat Shutdown.
+ESP.MAX_ITEMS = 30   -- batas objek per entri (Highlight Roblox maks ±31; juga menjaga performa)
+ESP.ITEM_KEYS = {"tracerLine", "nameLabel", "hl", "sb"}
+
 ESP.NewEntry = function(getPath)
-    local e = {getPath = getPath, obj = nil, lastPath = nil, nextResolve = 0, nextText = 0,
-        color = ORANGE, rainbow = false, applied = nil}
+    local e = {getPath = getPath, lastPath = nil, nextResolve = 0,
+        color = ORANGE, rainbow = false, applied = nil,
+        f = {tracer = false, name = false, highlight = false, box = false},
+        items = {}}
     table.insert(ESP.list, e)
     return e
+end
+
+ESP.AnyFeature = function(e)
+    local f = e.f
+    return f.tracer or f.name or f.highlight or f.box
+end
+
+-- Buat / buang instance satu fitur pada satu item
+ESP.ItemFeature = function(e, item, feature, on)
+    if on then ESP.EnsureGui() end
+    local col = e.applied or e.color
+    if feature == "tracer" then
+        if on and not item.tracerLine then
+            local f = Instance.new("Frame")
+            f.Name = "Tracer"
+            f.AnchorPoint = Vector2.new(0.5, 0.5)
+            f.BackgroundColor3 = col
+            f.BorderSizePixel = 0
+            f.Visible = false
+            f.Parent = ESP.gui
+            item.tracerLine = f
+        elseif not on and item.tracerLine then
+            item.tracerLine:Destroy()
+            item.tracerLine = nil
+        end
+    elseif feature == "name" then
+        if on and not item.nameLabel then
+            local l = Instance.new("TextLabel")
+            l.Name = "NameEsp"
+            l.AnchorPoint = Vector2.new(0.5, 1)
+            l.Size = UDim2.fromOffset(220, 16)
+            l.BackgroundTransparency = 1
+            l.Text = ""
+            l.TextColor3 = col
+            l.TextStrokeColor3 = Color3.new(0, 0, 0)
+            l.TextStrokeTransparency = 0.3
+            l.Font = Enum.Font.GothamBold
+            l.TextSize = 12
+            l.Visible = false
+            l.Parent = ESP.gui
+            item.nameLabel = l
+            item.nextText = 0
+        elseif not on and item.nameLabel then
+            item.nameLabel:Destroy()
+            item.nameLabel = nil
+        end
+    elseif feature == "highlight" then
+        if on and not item.hl then
+            local h = Instance.new("Highlight")
+            h.Name = "HighlightEsp"
+            h.FillColor = col
+            h.FillTransparency = 0.6
+            h.OutlineColor = col
+            h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            h.Adornee = item.obj
+            h.Parent = ESP.folder
+            item.hl = h
+        elseif not on and item.hl then
+            item.hl:Destroy()
+            item.hl = nil
+        end
+    elseif feature == "box" then
+        if on and not item.sb then
+            local b = Instance.new("SelectionBox")   -- kerangka (jaring-jaring) kubus di sekeliling objek
+            b.Name = "BoxEsp"
+            b.Color3 = col
+            b.LineThickness = 0.05
+            b.SurfaceTransparency = 1
+            b.Adornee = item.obj
+            b.Parent = ESP.folder
+            item.sb = b
+        elseif not on and item.sb then
+            item.sb:Destroy()
+            item.sb = nil
+        end
+    end
+end
+
+ESP.DestroyItem = function(item)
+    for _, k in ipairs(ESP.ITEM_KEYS) do
+        local inst = item[k]
+        if inst then
+            pcall(function() inst:Destroy() end)
+            item[k] = nil
+        end
+    end
+end
+
+-- Samakan item dengan daftar objek terbaru
+ESP.Sync = function(e, objs)
+    local keep = {}
+    for _, o in ipairs(objs) do
+        keep[o] = true
+        if not e.items[o] then
+            local item = {obj = o, nextText = 0}
+            e.items[o] = item
+            for feat, on in pairs(e.f) do
+                if on then ESP.ItemFeature(e, item, feat, true) end
+            end
+        end
+    end
+    for o, item in pairs(e.items) do
+        if not keep[o] then
+            ESP.DestroyItem(item)
+            e.items[o] = nil
+        end
+    end
 end
 
 ESP.Step = function()
@@ -380,10 +588,12 @@ ESP.Step = function()
     local now = os.clock()
     local rainbow = Color3.fromHSV((now * 0.3) % 1, 1, 1)
     for _, e in ipairs(ESP.list) do
-        local ok, err = pcall(ESP.UpdateEntry, e, cam, vp, origin, now, rainbow)
-        if not ok and not e.warned then
-            e.warned = true
-            print("[ESP] " .. tostring(err))
+        if ESP.AnyFeature(e) then
+            local ok, err = pcall(ESP.UpdateEntry, e, cam, vp, origin, now, rainbow)
+            if not ok and not e.warned then
+                e.warned = true
+                print("[ESP] " .. tostring(err))
+            end
         end
     end
 end
@@ -391,58 +601,62 @@ end
 ESP.UpdateEntry = function(e, cam, vp, origin, now, rainbow)
     local col = e.rainbow and rainbow or e.color
     if col ~= e.applied then ESP.Paint(e, col) end
+
     local path = e.getPath()
-    if path ~= e.lastPath then          -- path diganti -> cari ulang objeknya
+    if path ~= e.lastPath then          -- path diganti -> cari ulang
         e.lastPath = path
-        e.obj = nil
         e.nextResolve = 0
     end
-    local obj = e.obj
-    if obj and not obj:IsDescendantOf(game) then
-        obj = nil
-        e.obj = nil
-    end
-    if not obj and now >= e.nextResolve then
+    if now >= e.nextResolve then        -- pencarian dibatasi 2x/detik
         e.nextResolve = now + 0.5
-        obj = ResolveSafePath(path)
-        e.obj = obj
-    end
-    if e.hl and e.hl.Adornee ~= obj then e.hl.Adornee = obj end
-    if e.sb and e.sb.Adornee ~= obj then e.sb.Adornee = obj end
-
-    local line, label = e.tracerLine, e.nameLabel
-    if not (line or label) then return end
-    local pos = obj and ESP.Pos(obj)
-    if not pos then
-        if line then line.Visible = false end
-        if label then label.Visible = false end
-        return
-    end
-
-    local sp, onScreen = cam:WorldToViewportPoint(pos)
-    local x, y = sp.X, sp.Y
-    if sp.Z < 0 then                    -- di belakang kamera: cerminkan agar garis tetap menunjuk arahnya
-        x = vp.X - x
-        y = vp.Y - y
-    end
-    if line then
-        local ax, ay = vp.X * 0.5, vp.Y   -- tracer dari tengah bawah layar
-        local dx, dy = x - ax, y - ay
-        line.Size = UDim2.fromOffset(math.sqrt(dx * dx + dy * dy), 2)
-        line.Position = UDim2.fromOffset((ax + x) * 0.5, (ay + y) * 0.5)
-        line.Rotation = math.deg(math.atan2(dy, dx))
-        line.Visible = true
-    end
-    if label then
-        if onScreen then
-            label.Position = UDim2.fromOffset(x, y)
-            if now >= e.nextText then
-                e.nextText = now + 0.1
-                label.Text = string.format("%s [%dm]", obj.Name, math.floor((pos - origin).Magnitude + 0.5))
+        local objs = ResolveAll(path)
+        if #objs > ESP.MAX_ITEMS then   -- terlalu banyak: ambil yang terdekat
+            local dist = {}
+            for _, o in ipairs(objs) do
+                local p = ESP.Pos(o)
+                dist[o] = p and (p - origin).Magnitude or math.huge
             end
-            label.Visible = true
+            table.sort(objs, function(a, b) return dist[a] < dist[b] end)
+            for i = #objs, ESP.MAX_ITEMS + 1, -1 do objs[i] = nil end
+        end
+        ESP.Sync(e, objs)
+    end
+
+    local f = e.f
+    if not (f.tracer or f.name) then return end
+    local ax, ay = vp.X * 0.5, vp.Y     -- tracer dari tengah bawah layar
+    for o, item in pairs(e.items) do
+        local line, label = item.tracerLine, item.nameLabel
+        local pos = o:IsDescendantOf(game) and ESP.Pos(o) or nil
+        if not pos then
+            if line then line.Visible = false end
+            if label then label.Visible = false end
         else
-            label.Visible = false
+            local sp, onScreen = cam:WorldToViewportPoint(pos)
+            local x, y = sp.X, sp.Y
+            if sp.Z < 0 then            -- di belakang kamera: cerminkan agar garis tetap menunjuk arahnya
+                x = vp.X - x
+                y = vp.Y - y
+            end
+            if line then
+                local dx, dy = x - ax, y - ay
+                line.Size = UDim2.fromOffset(math.sqrt(dx * dx + dy * dy), 2)
+                line.Position = UDim2.fromOffset((ax + x) * 0.5, (ay + y) * 0.5)
+                line.Rotation = math.deg(math.atan2(dy, dx))
+                line.Visible = true
+            end
+            if label then
+                if onScreen then
+                    label.Position = UDim2.fromOffset(x, y)
+                    if now >= item.nextText then
+                        item.nextText = now + 0.1
+                        label.Text = string.format("%s [%dm]", o.Name, math.floor((pos - origin).Magnitude + 0.5))
+                    end
+                    label.Visible = true
+                else
+                    label.Visible = false
+                end
+            end
         end
     end
 end
@@ -450,7 +664,7 @@ end
 ESP.Refresh = function()
     local any = false
     for _, e in ipairs(ESP.list) do
-        if e.tracerLine or e.nameLabel or e.hl or e.sb then
+        if ESP.AnyFeature(e) then
             any = true
             break
         end
@@ -475,71 +689,17 @@ end
 ESP.Set = function(e, feature, on)
     on = on and true or false
     if on then ESP.EnsureGui() end
-
-    if feature == "tracer" then
-        if on and not e.tracerLine then
-            local f = Instance.new("Frame")
-            f.Name = "Tracer"
-            f.AnchorPoint = Vector2.new(0.5, 0.5)
-            f.BackgroundColor3 = ORANGE
-            f.BorderSizePixel = 0
-            f.Visible = false
-            f.Parent = ESP.gui
-            e.tracerLine = f
-        elseif not on and e.tracerLine then
-            e.tracerLine:Destroy()
-            e.tracerLine = nil
-        end
-    elseif feature == "name" then
-        if on and not e.nameLabel then
-            local l = Instance.new("TextLabel")
-            l.Name = "NameEsp"
-            l.AnchorPoint = Vector2.new(0.5, 1)
-            l.Size = UDim2.fromOffset(220, 16)
-            l.BackgroundTransparency = 1
-            l.Text = ""
-            l.TextColor3 = Color3.new(1, 1, 1)
-            l.TextStrokeColor3 = Color3.new(0, 0, 0)
-            l.TextStrokeTransparency = 0.3
-            l.Font = Enum.Font.GothamBold
-            l.TextSize = 12
-            l.Visible = false
-            l.Parent = ESP.gui
-            e.nameLabel = l
-            e.nextText = 0
-        elseif not on and e.nameLabel then
-            e.nameLabel:Destroy()
-            e.nameLabel = nil
-        end
-    elseif feature == "highlight" then
-        if on and not e.hl then
-            local h = Instance.new("Highlight")
-            h.Name = "HighlightEsp"
-            h.FillColor = ORANGE
-            h.FillTransparency = 0.6
-            h.OutlineColor = Color3.new(1, 1, 1)
-            h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-            h.Parent = ESP.folder
-            e.hl = h
-        elseif not on and e.hl then
-            e.hl:Destroy()
-            e.hl = nil
-        end
-    elseif feature == "box" then
-        if on and not e.sb then
-            local b = Instance.new("SelectionBox")   -- kerangka (jaring-jaring) kubus di sekeliling objek
-            b.Name = "BoxEsp"
-            b.Color3 = ORANGE
-            b.LineThickness = 0.05
-            b.SurfaceTransparency = 1
-            b.Parent = ESP.folder
-            e.sb = b
-        elseif not on and e.sb then
-            e.sb:Destroy()
-            e.sb = nil
+    e.f[feature] = on
+    for _, item in pairs(e.items) do
+        ESP.ItemFeature(e, item, feature, on)
+    end
+    if not ESP.AnyFeature(e) then       -- semua fitur mati: lepaskan semua item
+        for o, item in pairs(e.items) do
+            ESP.DestroyItem(item)
+            e.items[o] = nil
         end
     end
-    if on then ESP.Paint(e, e.color) end
+    e.nextResolve = 0                   -- cari objeknya segera
     ESP.Refresh()
 end
 
@@ -553,13 +713,11 @@ end
 
 ESP.Remove = function(e)
     if not e then return end
-    for _, k in ipairs({"tracerLine", "nameLabel", "hl", "sb"}) do
-        if e[k] then
-            pcall(function() e[k]:Destroy() end)
-            e[k] = nil
-        end
+    for o, item in pairs(e.items) do
+        ESP.DestroyItem(item)
+        e.items[o] = nil
     end
-    e.obj = nil
+    for k in pairs(e.f) do e.f[k] = false end
     local i = table.find(ESP.list, e)
     if i then table.remove(ESP.list, i) end
     ESP.Refresh()
@@ -659,13 +817,15 @@ ESP.COLORS = {
 
 ESP.Paint = function(e, col)
     e.applied = col
-    if e.tracerLine then e.tracerLine.BackgroundColor3 = col end
-    if e.nameLabel then e.nameLabel.TextColor3 = col end
-    if e.hl then
-        e.hl.FillColor = col
-        e.hl.OutlineColor = col
+    for _, item in pairs(e.items) do
+        if item.tracerLine then item.tracerLine.BackgroundColor3 = col end
+        if item.nameLabel then item.nameLabel.TextColor3 = col end
+        if item.hl then
+            item.hl.FillColor = col
+            item.hl.OutlineColor = col
+        end
+        if item.sb then item.sb.Color3 = col end
     end
-    if e.sb then e.sb.Color3 = col end
 end
 
 ESP.SetColor = function(e, col)
@@ -1243,7 +1403,7 @@ end
 -- Tidak perlu membuka Dex++. Path yang dihasilkan selalu diuji balik (path -> objek) sebelum ditampilkan.
 -- Anti kebocoran: koneksi input HANYA ada selama toggle ON, satu SelectionBox saja, dibersihkan saat Shutdown.
 do
-    local CARD_H = 156
+    local CARD_H = 172
     local Card = Instance.new("Frame")
     Card.Parent = CollectScrollFrame
     Card.Size = UDim2.new(1, -12, 0, CARD_H)
@@ -1253,7 +1413,7 @@ do
     cc.CornerRadius = UDim.new(0, 7)
     cc.Parent = Card
 
-    local Sel = {obj = nil, path = nil, conns = {}, box = nil, down = nil, downPos = nil, downTime = 0}
+    local Sel = {obj = nil, path = nil, matches = {}, group = true, conns = {}, boxes = {}, down = nil, downPos = nil, downTime = 0}
 
     -- Info objek
     local InfoPanel = Instance.new("Frame")
@@ -1287,15 +1447,30 @@ do
         return inst.Name .. " (" .. inst.ClassName .. ")"
     end
 
-    -- Susun keterangan lengkap objek: path, kelas, posisi, induk, isi, dan hasil uji path
+    local MAX_SHOW = 30   -- jumlah objek yang dilingkari kotak biru
+
+    -- Susun keterangan: path (kelompok bila "Semua Serupa" ON), jumlah objek yang dicakup, kelas, posisi, induk, isi, uji path
     local function Describe(inst)
-        local path = PathTool.Of(inst)
+        local path, nWild
+        if Sel.group then
+            path, nWild = PathTool.Group(inst)
+        else
+            path, nWild = PathTool.Of(inst), 0
+        end
         Sel.path = path
+        Sel.matches = {}
         if not path then
             return "Objek sudah tidak ada di game."
         end
+        local matches = ResolveAll(path)
+        Sel.matches = matches
+
         local L = {}
         table.insert(L, "Path: " .. path)
+        if nWild and nWild > 0 then
+            local note = (#matches > MAX_SHOW) and (", dilingkari " .. MAX_SHOW .. " pertama") or ""
+            table.insert(L, "Serupa: path ini mencakup " .. #matches .. " objek" .. note .. "  ([*] = semua yang bernama itu)")
+        end
         table.insert(L, "Nama: " .. inst.Name .. "  |  Class: " .. inst.ClassName)
 
         if inst:IsA("BasePart") then
@@ -1323,35 +1498,54 @@ do
             table.insert(L, "Isi (" .. #kids .. "): " .. table.concat(names, ", ") .. extra)
         end
 
-        if ResolveSafePath(path) == inst then
-            local note = path:find("%[%d+%]") and "  (nama ganda -> pakai [n])" or ""
-            table.insert(L, "Validasi: ✅ path cocok dengan objek" .. note)
+        if table.find(matches, inst) then
+            table.insert(L, "Validasi: ✅ path cocok dan mencakup objek ini")
         else
-            table.insert(L, "Validasi: ⚠ path tidak kembali ke objek ini")
+            table.insert(L, "Validasi: ⚠ path tidak mencakup objek ini")
         end
         return table.concat(L, "\n")
     end
 
-    -- Penanda objek terpilih (satu SelectionBox, dipakai ulang)
-    local function UpdateBox(inst)
-        if not Sel.box then
-            local b = Instance.new("SelectionBox")
-            b.Name = "SelectObjBox"
-            b.Color3 = Color3.fromRGB(80, 200, 255)
-            b.LineThickness = 0.05
-            b.SurfaceColor3 = Color3.fromRGB(80, 200, 255)
-            b.SurfaceTransparency = 0.8
-            b.Parent = ScreenGui
-            Sel.box = b
+    -- Kotak biru untuk setiap objek yang dicakup path (dipakai ulang, maks MAX_SHOW)
+    local function NewBox()
+        local b = Instance.new("SelectionBox")
+        b.Name = "SelectObjBox"
+        b.Color3 = Color3.fromRGB(80, 200, 255)
+        b.LineThickness = 0.05
+        b.SurfaceColor3 = Color3.fromRGB(80, 200, 255)
+        b.SurfaceTransparency = 0.8
+        b.Parent = ScreenGui
+        return b
+    end
+
+    local function UpdateBoxes(inst)
+        local list = {inst}
+        for _, o in ipairs(Sel.matches) do
+            if #list >= MAX_SHOW then break end
+            if o ~= inst then table.insert(list, o) end
         end
-        local skip = (inst == workspace) or inst:IsA("Terrain")   -- terlalu besar untuk digambar
-        Sel.box.Adornee = skip and nil or inst
+        local n = 0
+        for _, o in ipairs(list) do
+            if o ~= workspace and not o:IsA("Terrain") then   -- terlalu besar untuk digambar
+                n += 1
+                local b = Sel.boxes[n]
+                if not b then
+                    b = NewBox()
+                    Sel.boxes[n] = b
+                end
+                b.Adornee = o
+            end
+        end
+        for i = #Sel.boxes, n + 1, -1 do
+            Sel.boxes[i]:Destroy()
+            Sel.boxes[i] = nil
+        end
     end
 
     local function Select(inst)
         Sel.obj = inst
         SetInfo(Describe(inst))
-        UpdateBox(inst)
+        UpdateBoxes(inst)
     end
 
     local function PickAt(pos)
@@ -1377,9 +1571,9 @@ do
         end
         table.clear(Sel.conns)
         Sel.down, Sel.downPos = nil, nil
-        if Sel.box then
-            Sel.box:Destroy()
-            Sel.box = nil
+        for i = #Sel.boxes, 1, -1 do
+            Sel.boxes[i]:Destroy()
+            Sel.boxes[i] = nil
         end
     end
 
@@ -1403,7 +1597,7 @@ do
         end))
     end
 
-    ESP.MakeToggle(Card, "Select Object (ketuk objek di game)", UDim2.new(1, -8, 0, 22), UDim2.new(0, 4, 0, 4), function(on)
+    ESP.MakeToggle(Card, "Select Object", UDim2.new(0.5, -6, 0, 22), UDim2.new(0, 4, 0, 4), function(on)
         if on then
             StartSelect()
             SetInfo("Mode pilih aktif: ketuk sebuah objek di game.\n(Menggeser layar untuk kamera tidak memilih apa pun.)")
@@ -1411,6 +1605,14 @@ do
             StopSelect()
         end
     end)
+
+    local groupToggle = ESP.MakeToggle(Card, "Semua Serupa", UDim2.new(0.5, -6, 0, 22), UDim2.new(0.5, 2, 0, 4), function(on)
+        Sel.group = on
+        if Sel.obj and Sel.obj:IsDescendantOf(game) then
+            Select(Sel.obj)          -- hitung ulang path untuk objek yang sedang dipilih
+        end
+    end)
+    groupToggle.set(true)
 
     local CopyBtn = Instance.new("TextButton")
     CopyBtn.Parent = Card
@@ -1486,7 +1688,7 @@ do
 
     table.insert(cleanups, function()
         StopSelect()
-        Sel.obj, Sel.path = nil, nil
+        Sel.obj, Sel.path, Sel.matches = nil, nil, {}
     end)
 end
 
@@ -1661,11 +1863,19 @@ local function FollowAcquire(s, rootPos, now)
     if now < (s.followNextScan or 0) then return nil end
     s.followNextScan = now + 0.25
 
-    local cand = ResolveSafePath(path)
-    if not (cand and ESP.CF(cand)) then
-        cand = nil
+    -- path bisa mencakup banyak objek (Nama[*]) -> pilih yang terdekat; path biasa -> objeknya sendiri
+    local cand, bestD = nil, math.huge
+    for _, c in ipairs(ResolveAll(path)) do
+        local p = ESP.CF(c) and ESP.Pos(c)
+        if p then
+            local dd = (p - rootPos).Magnitude
+            if dd < bestD then
+                cand, bestD = c, dd
+            end
+        end
+    end
+    if not cand then
         local _, list = PathTool.Siblings(path)
-        local bestD = math.huge
         for _, c in ipairs(list) do
             local p = ESP.Pos(c)
             if p then
@@ -1863,25 +2073,48 @@ local function RunCollectStep(slotData)
         return
     end
 
-    local targetObj = ResolveSafePath(path)
-    if not targetObj then
+    local matches = ResolveAll(path)
+    if #matches == 0 then
         print("[Collect Slot " .. slotData.id .. "] Target path tidak ditemukan")
         return
     end
 
-    local targetPos = GetTargetPosition(targetObj)
-    if not targetPos then
-        print("[Collect Slot " .. slotData.id .. "] Tidak bisa baca posisi target")
-        return
-    end
-
+    -- Path boleh mencakup banyak objek (Nama[*]): kunjungi yang TERDEKAT yang belum dikunjungi,
+    -- lalu ulangi dari awal setelah semuanya pernah dikunjungi. Path berisi 1 objek berperilaku seperti biasa.
     local yLimit = tonumber(slotData.yLimitBox.Text)
-    if yLimit ~= nil and targetPos.Y < yLimit then
-        print(string.format("[Collect Slot %d] Target Y(%.2f) < batas %.2f → dilewati", slotData.id, targetPos.Y, yLimit))
+    local multi = #matches > 1
+    if multi and not slotData.visited then
+        slotData.visited = setmetatable({}, {__mode = "k"})   -- kunci lemah: tidak menahan objek yang sudah dihapus
+    end
+    local function Pick(skipVisited)
+        local bestObj, bestPos, bestD = nil, nil, math.huge
+        for _, obj in ipairs(matches) do
+            local p = GetTargetPosition(obj)
+            if p and not (yLimit ~= nil and p.Y < yLimit) and not (skipVisited and slotData.visited[obj]) then
+                local d = (p - root.Position).Magnitude
+                if d < bestD then bestObj, bestPos, bestD = obj, p, d end
+            end
+        end
+        return bestObj, bestPos
+    end
+    local pickedObj, targetPos
+    if multi then
+        pickedObj, targetPos = Pick(true)
+        if not pickedObj then
+            table.clear(slotData.visited)
+            pickedObj, targetPos = Pick(false)
+        end
+        if pickedObj then slotData.visited[pickedObj] = true end
+    else
+        pickedObj, targetPos = Pick(false)
+    end
+    if not targetPos then
+        print("[Collect Slot " .. slotData.id .. "] Tidak ada target valid (posisi tak terbaca / di bawah batas Y)")
         return
     end
 
     targetPos += Vector3.new(0, 2, 0)
+
     local goal = CFrame.new(targetPos, targetPos + root.CFrame.LookVector)
 
     if slotData.mode == "tween" then
@@ -1941,6 +2174,7 @@ local function StartCollectSlot(slotData)
     end
     collectStartCounter += 1
     slotData.startOrder = collectStartCounter
+    slotData.visited = nil
     slotData.active = true
     SetSlotButton(slotData, true)
     EnsureCollectScheduler()
