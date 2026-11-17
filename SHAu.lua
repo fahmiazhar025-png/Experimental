@@ -13,7 +13,7 @@ if env.ShrimpHubShutdown then
     env.ShrimpHubShutdown = nil
 end
 for _, gui in ipairs(LocalPlayer.PlayerGui:GetChildren()) do
-    if gui.Name == "Shrimp_Hub_Auto" or gui.Name == "Shrimp_Hub_Logo" or gui.Name == "Shrimp_Hub_ESP" or gui.Name == "Shrimp_Hub_Marks" then
+    if gui.Name == "Shrimp_Hub_Auto" or gui.Name == "Shrimp_Hub_Logo" or gui.Name == "Shrimp_Hub_ESP" or gui.Name == "Shrimp_Hub_Marks" or gui.Name == "Shrimp_Hub_Zone" then
         pcall(function() gui:Destroy() end)
     end
 end
@@ -73,6 +73,8 @@ local TP = {
     tween = nil, delThread = nil, onRespawn = nil,
 }
 local TabTeleportContainer = nil
+local TabZoneContainer = nil
+local ZoneStop = nil
 local StopTeleport = nil
 
 local function Track(conn)
@@ -784,7 +786,7 @@ ESP.MakeToggle = function(parent, text, size, pos, onToggle)
     lbl.TextSize = 9
     lbl.TextXAlignment = Enum.TextXAlignment.Left
 
-    local t = {state = false, btn = btn}
+    local t = {state = false, btn = btn, label = lbl}
     local function paint()
         circle.BackgroundColor3 = t.state and BTN_GREEN or INPUT_BG
         btn.BackgroundColor3 = t.state and TAB_ACTIVE or INPUT_BG
@@ -1061,10 +1063,10 @@ Sidebar.Size = UDim2.new(0, SIDEBAR_W, 1, -(HEADER_H + 2))
 Sidebar.Position = UDim2.new(0, 0, 0, HEADER_H + 2)
 Sidebar.BackgroundTransparency = 1
 
-local TAB_H = 42
-local TAB_GAP = 50
+local TAB_H = 40
+local TAB_GAP = 46
 local function CreateTabButton(text, order)
-    local y = 10 + (order - 1) * TAB_GAP
+    local y = 8 + (order - 1) * TAB_GAP
 
     local Shadow = Instance.new("Frame")
     Shadow.Parent = Sidebar
@@ -1097,6 +1099,7 @@ local TabHomeBtn = CreateTabButton("Tab Home", 1)
 local TabRemoteBtn = CreateTabButton("Tab Auto Remote", 2)
 local TabCollectBtn = CreateTabButton("Tab Auto Collect", 3)
 local TabTeleportBtn = CreateTabButton("Tab Auto Teleport", 4)
+local TabZoneBtn = CreateTabButton("Tab Auto Zone", 5)
 
 -- ===== WADAH KONTEN (kanan) =====
 local TabContentWrapper = Instance.new("Frame")
@@ -1980,6 +1983,7 @@ local function AnySlotActive()
 end
 
 local function SessionBegin()
+    if ZoneStop then ZoneStop(true) end      -- Auto Zona berhenti bila Collect/Follow dimulai (tidak rebutan kendali)
     if AutoSession.origin then return end
     local root = GetHumanoidRootPart()
     if root then AutoSession.origin = root.CFrame end
@@ -3156,7 +3160,7 @@ CreateRemoteSlot()
 -- ==================================================
 -- ========== KONTEN TAB AUTO TELEPORT ==============
 -- ==================================================
-do
+;(function()
     local function Corner(obj, r)
         local c = Instance.new("UICorner")
         c.CornerRadius = UDim.new(0, r or 5)
@@ -3949,6 +3953,7 @@ do
         end
         local startRoot = GetHumanoidRootPart()
         if not startRoot then return end
+        if ZoneStop then ZoneStop(true) end
 
         TP.farmOrigin = startRoot.CFrame      -- posisi awal (kembali ke sini + 2 stud saat berhenti)
         TP.farmActive = true
@@ -4071,7 +4076,1268 @@ do
 
     PosBtnText()
     RefreshGroups()
-end
+end)()
+
+-- ==================================================
+-- ========== TAB AUTO ZONE =========================
+-- ==================================================
+-- Zona bisa ditentukan 5 cara: Deteksi Zona (Part di sekitar karakter), Ketuk Part, Path Part (boleh Nama[*]),
+-- 2 sudut (kotak), titik tengah + radius (bola), atau Poligon (bentuk bebas dari titik-titik).
+-- Isi zona dipindai, dikelompokkan per jenis (Box x19, Chest x11, ...), lalu dikunjungi satu per satu,
+-- diambil (sentuh / prompt tahan tombol / klik / tahan E), dan boleh disetor ke Titik Setor.
+-- Dibungkus fungsi sendiri supaya jumlah local di tingkat atas tidak melewati batas 200 Lua.
+;(function()
+    local function Corner(obj, r)
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, r or 5)
+        c.Parent = obj
+    end
+
+    local function MakeButton(parent, text, color, size, pos, textSize)
+        local b = Instance.new("TextButton")
+        b.Parent = parent
+        b.Size = size
+        b.Position = pos or UDim2.new(0, 0, 0, 0)
+        b.BackgroundColor3 = color
+        b.Text = text
+        b.TextColor3 = Color3.new(1, 1, 1)
+        b.Font = Enum.Font.GothamBold
+        b.TextSize = textSize or 9
+        b.TextWrapped = true
+        b.AutoLocalize = false
+        b.AutoButtonColor = false
+        Corner(b, 5)
+        return b
+    end
+
+    local function MakeBox(parent, placeholder, text, size, pos)
+        local t = Instance.new("TextBox")
+        t.Parent = parent
+        t.Size = size
+        t.Position = pos or UDim2.new(0, 0, 0, 0)
+        t.BackgroundColor3 = INPUT_BG
+        t.PlaceholderText = placeholder
+        t.PlaceholderColor3 = PLACEHOLDER
+        t.Text = text or ""
+        t.TextColor3 = TEXT_DARK
+        t.Font = Enum.Font.Gotham
+        t.TextSize = 10
+        t.ClearTextOnFocus = false
+        Corner(t, 4)
+        return t
+    end
+
+    local function MakeLabel(parent, text, size, pos, textSize)
+        local l = Instance.new("TextLabel")
+        l.Parent = parent
+        l.Size = size
+        l.Position = pos or UDim2.new(0, 0, 0, 0)
+        l.BackgroundTransparency = 1
+        l.Text = text
+        l.TextColor3 = TEXT_DARK
+        l.Font = Enum.Font.GothamBold
+        l.TextSize = textSize or 10
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        return l
+    end
+
+    local function Fmt(n)
+        return string.format("%g", n)
+    end
+
+    -- ===== Wadah tab =====
+    TabZoneContainer = Instance.new("Frame")
+    TabZoneContainer.Parent = TabContentWrapper
+    TabZoneContainer.Size = UDim2.new(1, 0, 1, 0)
+    TabZoneContainer.Visible = false
+    TabZoneContainer.BackgroundTransparency = 1
+
+    local Scroll = Instance.new("ScrollingFrame")
+    Scroll.Parent = TabZoneContainer
+    Scroll.Size = UDim2.new(1, 0, 1, 0)
+    Scroll.BackgroundTransparency = 1
+    Scroll.ScrollBarThickness = 6
+    Scroll.ScrollBarImageColor3 = LINE
+    Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    local ScrollList = Instance.new("UIListLayout")
+    ScrollList.Parent = Scroll
+    ScrollList.Padding = UDim.new(0, 6)
+    ScrollList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    ScrollList.SortOrder = Enum.SortOrder.LayoutOrder
+
+    local function NewCard(order, title)
+        local card = Instance.new("Frame")
+        card.Parent = Scroll
+        card.Size = UDim2.new(1, -12, 0, 0)
+        card.AutomaticSize = Enum.AutomaticSize.Y
+        card.BackgroundColor3 = HEADER_BG
+        card.LayoutOrder = order
+        Corner(card, 7)
+        local pad = Instance.new("UIPadding")
+        pad.PaddingTop = UDim.new(0, 5)
+        pad.PaddingBottom = UDim.new(0, 6)
+        pad.PaddingLeft = UDim.new(0, 5)
+        pad.PaddingRight = UDim.new(0, 5)
+        pad.Parent = card
+        local list = Instance.new("UIListLayout")
+        list.Padding = UDim.new(0, 5)
+        list.SortOrder = Enum.SortOrder.LayoutOrder
+        list.Parent = card
+        local lbl = MakeLabel(card, title, UDim2.new(1, 0, 0, 18), nil, 11)
+        lbl.LayoutOrder = 0
+        return card
+    end
+
+    local function NewRow(parent, order, height)
+        local row = Instance.new("Frame")
+        row.Parent = parent
+        row.Size = UDim2.new(1, 0, 0, height)
+        row.BackgroundTransparency = 1
+        row.LayoutOrder = order
+        return row
+    end
+
+    local function NewList(parent, order)
+        local f = Instance.new("Frame")
+        f.Parent = parent
+        f.Size = UDim2.new(1, 0, 0, 0)
+        f.AutomaticSize = Enum.AutomaticSize.Y
+        f.BackgroundTransparency = 1
+        f.LayoutOrder = order
+        local l = Instance.new("UIListLayout")
+        l.Padding = UDim.new(0, 3)
+        l.SortOrder = Enum.SortOrder.LayoutOrder
+        l.Parent = f
+        return f
+    end
+
+    -- ===== State zona =====
+    local Z = {
+        kind = nil,                       -- "parts" | "box" | "sphere" | "poly"
+        parts = {}, partSet = {},
+        cA = nil, cB = nil, extraH = 25,
+        center = nil, radius = 40,
+        poly = {},
+        show = true, vis = nil,
+        sel = {}, rows = {}, maxSize = 40,
+        autoScan = false, scanThread = nil,
+        candRows = {}, candMap = {},
+        method = "auto", pickDelay = 0.4, holdTime = 1.5,
+        depositCF = nil, depositEvery = 1, depositWait = 1.5,
+        running = false, thread = nil, origin = nil,
+        stats = {picked = 0, gone = 0, deposits = 0},
+        visited = setmetatable({}, {__mode = "k"}),
+        tapConns = {}, tapOn = false, tapDown = nil, tapPos = nil, tapTime = 0,
+    }
+
+    -- ===== KARTU 1: ZONA =====
+    local CardZone = NewCard(1, "🗺 ZONA")
+    local StatusLbl = MakeLabel(NewRow(CardZone, 1, 44), "", UDim2.new(1, 0, 1, 0), nil, 9)
+    StatusLbl.Font = Enum.Font.Gotham
+    StatusLbl.TextWrapped = true
+    StatusLbl.TextYAlignment = Enum.TextYAlignment.Top
+
+    local RowKinds = NewRow(CardZone, 2, 22)
+    local KindBtns = {}
+    for i, d in ipairs({{"parts", "PART"}, {"box", "KOTAK"}, {"sphere", "BOLA"}, {"poly", "POLIGON"}}) do
+        KindBtns[d[1]] = MakeButton(RowKinds, d[2], BTN_GRAY, UDim2.new(0.24, 0, 1, 0), UDim2.new((i - 1) * 0.253, 0, 0, 0), 9)
+    end
+
+    local RowDetect = NewRow(CardZone, 3, 24)
+    local DetectBtn = MakeButton(RowDetect, "🔍 DETEKSI ZONA", BTN_TEAL, UDim2.new(0.49, 0, 1, 0))
+    local TapBtn = MakeButton(RowDetect, "👆 KETUK PART", BTN_GRAY, UDim2.new(0.49, 0, 1, 0), UDim2.new(0.51, 0, 0, 0))
+
+    local RowPath = NewRow(CardZone, 4, 24)
+    local PathBox = MakeBox(RowPath, "Path Part zona (boleh Nama[*])", "", UDim2.new(0.64, 0, 1, 0))
+    local PathAddBtn = MakeButton(RowPath, "+ PATH", BTN_BLUE, UDim2.new(0.34, 0, 1, 0), UDim2.new(0.66, 0, 0, 0))
+
+    local CandHead = NewRow(CardZone, 5, 14)
+    local CandLbl = MakeLabel(CandHead, "", UDim2.new(1, 0, 1, 0), nil, 9)
+    CandHead.Visible = false
+    local CandHolder = NewList(CardZone, 6)
+
+    local RowAB = NewRow(CardZone, 7, 24)
+    local BtnA = MakeButton(RowAB, "Set Sudut A", BTN_ORANGE, UDim2.new(0.49, 0, 1, 0))
+    local BtnB = MakeButton(RowAB, "Set Sudut B", BTN_ORANGE, UDim2.new(0.49, 0, 1, 0), UDim2.new(0.51, 0, 0, 0))
+    local RowH = NewRow(CardZone, 8, 22)
+    MakeLabel(RowH, "Tinggi di atas sudut / Part pipih:", UDim2.new(0.55, 0, 1, 0), nil, 9)
+    local HBox = MakeBox(RowH, "25", "25", UDim2.new(0.25, 0, 1, 0), UDim2.new(0.57, 0, 0, 0))
+    local RowC = NewRow(CardZone, 9, 24)
+    local BtnC = MakeButton(RowC, "Set Titik Tengah", BTN_ORANGE, UDim2.new(0.46, 0, 1, 0))
+    MakeLabel(RowC, "Radius:", UDim2.new(0.16, 0, 1, 0), UDim2.new(0.48, 0, 0, 0))
+    local RBox = MakeBox(RowC, "40", "40", UDim2.new(0.32, 0, 1, 0), UDim2.new(0.66, 0, 0, 0))
+    local RowP = NewRow(CardZone, 10, 24)
+    local BtnPAdd = MakeButton(RowP, "+ Titik Poligon (posisi sekarang)", BTN_ORANGE, UDim2.new(0.64, 0, 1, 0))
+    local BtnPReset = MakeButton(RowP, "Reset", BTN_GRAY, UDim2.new(0.34, 0, 1, 0), UDim2.new(0.66, 0, 0, 0))
+    local RowShow = NewRow(CardZone, 11, 22)
+    local ShowToggle = ESP.MakeToggle(RowShow, "Tampilkan Zona", UDim2.new(0.6, 0, 1, 0), UDim2.new(0, 0, 0, 0), function(on)
+        Z.show = on
+        Z.updateVisual()
+    end)
+    ShowToggle.set(true)
+    local BtnClear = MakeButton(RowShow, "Hapus Zona", BTN_RED, UDim2.new(0.38, 0, 1, 0), UDim2.new(0.62, 0, 0, 0))
+
+    -- ===== KARTU 2: ISI ZONA =====
+    local CardScan = NewCard(2, "📦 ISI ZONA")
+    local RowScan = NewRow(CardScan, 1, 24)
+    local ScanBtn = MakeButton(RowScan, "🔄 SCAN", BTN_TEAL, UDim2.new(0.3, 0, 1, 0))
+    local AutoScanToggle = ESP.MakeToggle(RowScan, "Auto Scan (0,5 dtk)", UDim2.new(0.68, 0, 1, 0), UDim2.new(0.32, 0, 0, 0), function(on)
+        Z.setAutoScan(on)
+    end)
+    local RowMax = NewRow(CardScan, 2, 22)
+    MakeLabel(RowMax, "Abaikan objek lebih besar dari (stud):", UDim2.new(0.62, 0, 1, 0), nil, 9)
+    local MaxBox = MakeBox(RowMax, "40", "40", UDim2.new(0.25, 0, 1, 0), UDim2.new(0.64, 0, 0, 0))
+    local SummaryLbl = MakeLabel(NewRow(CardScan, 3, 40), "Atur zona dulu, lalu tekan SCAN.", UDim2.new(1, 0, 1, 0), nil, 9)
+    SummaryLbl.Font = Enum.Font.Gotham
+    SummaryLbl.TextWrapped = true
+    SummaryLbl.TextYAlignment = Enum.TextYAlignment.Top
+    local GroupHolder = NewList(CardScan, 4)
+
+    -- ===== KARTU 3: PENGAMBILAN & SETOR =====
+    local CardPick = NewCard(3, "🎒 PENGAMBILAN & SETOR")
+    local METHODS = {
+        {"auto", "AUTO (dideteksi per barang)"},
+        {"touch", "SENTUH"},
+        {"prompt", "PROMPT (tahan tombol prompt)"},
+        {"click", "KLIK (ClickDetector)"},
+        {"hold", "TAHAN TOMBOL E (manual)"},
+    }
+    local methodIdx = 1
+    local MethodBtn = MakeButton(NewRow(CardPick, 1, 24), "Cara ambil: " .. METHODS[1][2], BTN_BLUE, UDim2.new(1, 0, 1, 0))
+    local function BoxRow(order, label, default)
+        local row = NewRow(CardPick, order, 22)
+        MakeLabel(row, label, UDim2.new(0.62, 0, 1, 0), nil, 9)
+        return MakeBox(row, default, default, UDim2.new(0.3, 0, 1, 0), UDim2.new(0.64, 0, 0, 0))
+    end
+    local PickBox = BoxRow(2, "Jeda setelah ambil (dtk):", "0.4")
+    local HoldBox = BoxRow(3, "Lama tahan E untuk cara TAHAN (dtk):", "1.5")
+    local RowDep = NewRow(CardPick, 4, 24)
+    local BtnDep = MakeButton(RowDep, "📍 SET TITIK SETOR (posisi sekarang)", BTN_ORANGE, UDim2.new(0.64, 0, 1, 0))
+    local BtnDepClr = MakeButton(RowDep, "✖ Hapus", BTN_GRAY, UDim2.new(0.34, 0, 1, 0), UDim2.new(0.66, 0, 0, 0))
+    local DepLbl = MakeLabel(NewRow(CardPick, 5, 14), "Titik setor: belum diatur (barang tidak disetor)", UDim2.new(1, 0, 1, 0), nil, 9)
+    DepLbl.Font = Enum.Font.Gotham
+    local EveryBox = BoxRow(6, "Setor tiap (barang):", "1")
+    local WaitBox = BoxRow(7, "Jeda di titik setor (dtk):", "1.5")
+
+    -- ===== KARTU 4: JALANKAN =====
+    local CardRun = NewCard(4, "▶ AUTO ZONA")
+    local RunBtn = MakeButton(NewRow(CardRun, 1, 30), "▶ MULAI AUTO ZONA", BTN_GREEN, UDim2.new(1, 0, 1, 0), nil, 11)
+    local RunLbl = MakeLabel(NewRow(CardRun, 2, 44), "Status: berhenti", UDim2.new(1, 0, 1, 0), nil, 9)
+    RunLbl.Font = Enum.Font.Gotham
+    RunLbl.TextWrapped = true
+    RunLbl.TextYAlignment = Enum.TextYAlignment.Top
+
+    -- ==================================================
+    -- GEOMETRI ZONA
+    -- ==================================================
+    local ZCOL = Color3.fromRGB(60, 220, 120)
+
+    local function Flash(btn, text, restore)
+        btn:SetAttribute("flash", (btn:GetAttribute("flash") or 0) + 1)
+        local my = btn:GetAttribute("flash")
+        btn.Text = text
+        task.delay(1.3, function()
+            if btn.Parent and btn:GetAttribute("flash") == my then btn.Text = restore end
+        end)
+    end
+
+    local function ValidParts()
+        for i = #Z.parts, 1, -1 do
+            local p = Z.parts[i]
+            if not p:IsDescendantOf(game) then
+                Z.partSet[p] = nil
+                table.remove(Z.parts, i)
+            end
+        end
+    end
+
+    local function Defined(kind)
+        if kind == "parts" then
+            ValidParts()
+            return #Z.parts > 0
+        elseif kind == "box" then
+            return Z.cA ~= nil and Z.cB ~= nil
+        elseif kind == "sphere" then
+            return Z.center ~= nil
+        elseif kind == "poly" then
+            return #Z.poly >= 3
+        end
+        return false
+    end
+
+    local function BoxGeom()
+        local a, b = Z.cA, Z.cB
+        local lo = Vector3.new(math.min(a.X, b.X), math.min(a.Y, b.Y) - 3, math.min(a.Z, b.Z))
+        local hi = Vector3.new(math.max(a.X, b.X), math.max(a.Y, b.Y) + Z.extraH, math.max(a.Z, b.Z))
+        local size = Vector3.new(math.max(hi.X - lo.X, 4), math.max(hi.Y - lo.Y, 4), math.max(hi.Z - lo.Z, 4))
+        return CFrame.new((lo + hi) / 2), size
+    end
+
+    local function PolyBounds()
+        local lo = Vector3.new(math.huge, math.huge, math.huge)
+        local hi = Vector3.new(-math.huge, -math.huge, -math.huge)
+        for _, p in ipairs(Z.poly) do
+            lo = Vector3.new(math.min(lo.X, p.X), math.min(lo.Y, p.Y), math.min(lo.Z, p.Z))
+            hi = Vector3.new(math.max(hi.X, p.X), math.max(hi.Y, p.Y), math.max(hi.Z, p.Z))
+        end
+        lo = Vector3.new(lo.X, lo.Y - 3, lo.Z)
+        hi = Vector3.new(hi.X, hi.Y + Z.extraH, hi.Z)
+        return lo, hi
+    end
+
+    -- titik di dalam poligon (bidang X-Z), algoritma ray casting; bentuk cekung pun benar
+    local function InPoly(x, z)
+        local inside = false
+        local pts = Z.poly
+        local j = #pts
+        for i = 1, #pts do
+            local a, b = pts[i], pts[j]
+            if ((a.Z > z) ~= (b.Z > z)) and (x < (b.X - a.X) * (z - a.Z) / (b.Z - a.Z) + a.X) then
+                inside = not inside
+            end
+            j = i
+        end
+        return inside
+    end
+
+    local function PartContains(p, pos)
+        local lp = p.CFrame:PointToObjectSpace(pos)
+        local h = p.Size / 2
+        if p:IsA("Part") and p.Shape == Enum.PartType.Ball then
+            return lp.Magnitude <= h.X
+        end
+        return math.abs(lp.X) <= h.X and math.abs(lp.Y) <= h.Y and math.abs(lp.Z) <= h.Z
+    end
+
+    local function Contains(pos)
+        local kind = Z.kind
+        if kind == "parts" then
+            for _, p in ipairs(Z.parts) do
+                if p:IsDescendantOf(game) then
+                    if PartContains(p, pos) then return true end
+                    -- Part pipih (mis. lantai zona): ruang di atasnya sampai Z.extraH juga bagian zona
+                    if Z.extraH > 0 and p.Size.Y <= 8 then
+                        local lp = p.CFrame:PointToObjectSpace(pos)
+                        local h = p.Size / 2
+                        if math.abs(lp.X) <= h.X and math.abs(lp.Z) <= h.Z and lp.Y >= -h.Y and lp.Y <= h.Y + Z.extraH then
+                            return true
+                        end
+                    end
+                end
+            end
+            return false
+        elseif kind == "box" and Defined("box") then
+            local cf, size = BoxGeom()
+            local lp = cf:PointToObjectSpace(pos)
+            return math.abs(lp.X) <= size.X / 2 and math.abs(lp.Y) <= size.Y / 2 and math.abs(lp.Z) <= size.Z / 2
+        elseif kind == "sphere" and Defined("sphere") then
+            return (pos - Z.center).Magnitude <= Z.radius
+        elseif kind == "poly" and Defined("poly") then
+            local lo, hi = PolyBounds()
+            return pos.Y >= lo.Y and pos.Y <= hi.Y and InPoly(pos.X, pos.Z)
+        end
+        return false
+    end
+
+    -- titik di dalam zona untuk dituju saat belum ada barang (supaya barang acak mulai muncul)
+    local function ZoneAnchor()
+        local kind = Z.kind
+        if kind == "parts" then
+            ValidParts()
+            local p = Z.parts[1]
+            if p then return p.Position + Vector3.new(0, 3, 0) end
+        elseif kind == "box" and Defined("box") then
+            local cf = BoxGeom()
+            return cf.Position
+        elseif kind == "sphere" and Defined("sphere") then
+            return Z.center + Vector3.new(0, 3, 0)
+        elseif kind == "poly" and Defined("poly") then
+            local sum = Vector3.zero
+            for _, p in ipairs(Z.poly) do sum += p end
+            local c = sum / #Z.poly
+            return c + Vector3.new(0, 3, 0)
+        end
+        return nil
+    end
+
+    -- ==================================================
+    -- STATUS & VISUAL
+    -- ==================================================
+    local function UpdateStatus()
+        local t
+        if Z.kind == "parts" then
+            t = "Zona aktif: PART - " .. #Z.parts .. " bagian (bentuk mengikuti Part aslinya)"
+        elseif Z.kind == "box" then
+            local _, size = BoxGeom()
+            t = string.format("Zona aktif: KOTAK dari 2 sudut (%d x %d x %d stud)", math.floor(size.X), math.floor(size.Y), math.floor(size.Z))
+        elseif Z.kind == "sphere" then
+            t = "Zona aktif: BOLA radius " .. Fmt(Z.radius) .. " stud"
+        elseif Z.kind == "poly" then
+            t = "Zona aktif: POLIGON " .. #Z.poly .. " titik (bentuk bebas)"
+        else
+            t = "Belum ada zona. Pakai Deteksi Zona, Ketuk Part, Path, 2 sudut, titik tengah, atau Poligon."
+        end
+        if #Z.poly > 0 and #Z.poly < 3 then
+            t = t .. "\nPoligon: " .. #Z.poly .. " titik (minimal 3)."
+        end
+        StatusLbl.Text = t
+        for k, b in pairs(KindBtns) do
+            if Z.kind == k then
+                b.BackgroundColor3 = BTN_BLUE
+            elseif Defined(k) then
+                b.BackgroundColor3 = BTN_TEAL
+            else
+                b.BackgroundColor3 = BTN_GRAY
+            end
+        end
+    end
+
+    local function AddSphere(folder, base, pos, radius, color)
+        local s = Instance.new("SphereHandleAdornment")
+        s.Adornee = base
+        s.Radius = radius
+        s.CFrame = base.CFrame:ToObjectSpace(CFrame.new(pos))
+        s.Color3 = color
+        s.Transparency = 0.1
+        s.AlwaysOnTop = true
+        s.ZIndex = 2
+        s.Parent = folder
+    end
+
+    local function AddBar(folder, base, a, b, color)
+        local d = (b - a).Magnitude
+        if d < 0.1 then return end
+        local bar = Instance.new("BoxHandleAdornment")
+        bar.Adornee = base
+        bar.Size = Vector3.new(0.4, 0.4, d)
+        bar.CFrame = base.CFrame:ToObjectSpace(CFrame.lookAt((a + b) / 2, b))
+        bar.Color3 = color
+        bar.Transparency = 0.2
+        bar.AlwaysOnTop = true
+        bar.ZIndex = 1
+        bar.Parent = folder
+    end
+
+    local function UpdateVisual()
+        if Z.vis then
+            Z.vis:Destroy()
+            Z.vis = nil
+        end
+        if not Z.show then return end
+        if not (Z.kind or Z.cA or Z.cB or Z.center or #Z.poly > 0 or Z.depositCF) then return end
+        local folder = Instance.new("Folder")
+        folder.Name = "Shrimp_Hub_Zone"
+        folder.Parent = LocalPlayer.PlayerGui
+        Z.vis = folder
+        local base = workspace.Terrain
+
+        if Z.kind == "parts" then
+            for i, p in ipairs(Z.parts) do
+                if i > 28 then break end          -- batas Highlight Roblox
+                local h = Instance.new("Highlight")
+                h.FillColor = ZCOL
+                h.FillTransparency = 0.82
+                h.OutlineColor = ZCOL
+                h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                h.Adornee = p
+                h.Parent = folder
+            end
+        elseif Z.kind == "box" and Defined("box") then
+            local cf, size = BoxGeom()
+            local box = Instance.new("BoxHandleAdornment")
+            box.Adornee = base
+            box.Size = size
+            box.CFrame = base.CFrame:ToObjectSpace(cf)
+            box.Color3 = ZCOL
+            box.Transparency = 0.88
+            box.AlwaysOnTop = true
+            box.ZIndex = 1
+            box.Parent = folder
+        elseif Z.kind == "sphere" and Defined("sphere") then
+            local s = Instance.new("SphereHandleAdornment")
+            s.Adornee = base
+            s.Radius = Z.radius
+            s.CFrame = base.CFrame:ToObjectSpace(CFrame.new(Z.center))
+            s.Color3 = ZCOL
+            s.Transparency = 0.88
+            s.AlwaysOnTop = true
+            s.ZIndex = 1
+            s.Parent = folder
+        end
+
+        -- penanda titik (sudut, tengah, poligon, setor)
+        if Z.cA then AddSphere(folder, base, Z.cA, 0.8, ORANGE) end
+        if Z.cB then AddSphere(folder, base, Z.cB, 0.8, ORANGE) end
+        if Z.center then AddSphere(folder, base, Z.center, 0.8, ORANGE) end
+        local n = #Z.poly
+        for i, p in ipairs(Z.poly) do
+            AddSphere(folder, base, p, 0.8, ZCOL)
+            if i < n then
+                AddBar(folder, base, p, Z.poly[i + 1], ZCOL)
+            elseif n >= 3 then
+                AddBar(folder, base, p, Z.poly[1], ZCOL)
+            end
+        end
+        if Z.depositCF then AddSphere(folder, base, Z.depositCF.Position, 1.2, Color3.fromRGB(150, 80, 230)) end
+    end
+    Z.updateVisual = UpdateVisual
+
+    local function SetKind(kind)
+        Z.kind = kind
+        UpdateStatus()
+        UpdateVisual()
+    end
+
+    local function FallbackKind()
+        for _, k in ipairs({"parts", "box", "sphere", "poly"}) do
+            if Defined(k) then return k end
+        end
+        return nil
+    end
+
+    -- ==================================================
+    -- PART ZONA (deteksi / ketuk / path)
+    -- ==================================================
+    local function TogglePart(p, on)
+        if on then
+            if not Z.partSet[p] then
+                Z.partSet[p] = true
+                Z.parts[#Z.parts + 1] = p
+            end
+            SetKind("parts")
+        else
+            if Z.partSet[p] then
+                Z.partSet[p] = nil
+                local i = table.find(Z.parts, p)
+                if i then table.remove(Z.parts, i) end
+            end
+            if Z.kind == "parts" and #Z.parts == 0 then
+                SetKind(FallbackKind())
+            else
+                UpdateStatus()
+                UpdateVisual()
+            end
+        end
+        local tg = Z.candMap[p]
+        if tg then tg.set(on) end
+    end
+
+    local function ClearCands()
+        for _, b in ipairs(Z.candRows) do
+            b:Destroy()
+        end
+        table.clear(Z.candRows)
+        table.clear(Z.candMap)
+        CandHead.Visible = false
+    end
+
+    local ZONE_WORDS = {"zone", "area", "region", "arena", "trigger", "hitbox", "safe", "bound", "spawn", "end", "finish"}
+    local function ZoneScore(p)
+        local s = 0
+        if not p.CanCollide then s += 3 end
+        if p.Transparency >= 0.9 then s += 2 end
+        local n = p.Name:lower()
+        for _, w in ipairs(ZONE_WORDS) do
+            if n:find(w, 1, true) then
+                s += 3
+                break
+            end
+        end
+        local sz = p.Size
+        if math.max(sz.X, sz.Y, sz.Z) >= 20 then s += 1 end
+        return s
+    end
+
+    local function ShowCands(list)
+        ClearCands()
+        CandHead.Visible = true
+        if #list == 0 then
+            CandLbl.Text = "Tidak ada Part terdeteksi. Dekati zona, atau pakai Ketuk Part / Path."
+            return
+        end
+        CandLbl.Text = "Kandidat zona - pilih satu atau beberapa Part:"
+        for i, c in ipairs(list) do
+            local p = c.part
+            local sz = p.Size
+            local label = string.format("%s (%d×%d×%d)%s%s", p.Name,
+                math.floor(sz.X + 0.5), math.floor(sz.Y + 0.5), math.floor(sz.Z + 0.5),
+                c.inside and "  ✔ di dalam" or "", p.CanCollide and "" or "  · tembus")
+            local tg = ESP.MakeToggle(CandHolder, label, UDim2.new(1, 0, 0, 22), UDim2.new(0, 0, 0, 0), function(on)
+                TogglePart(p, on)
+            end)
+            tg.btn.LayoutOrder = i
+            tg.set(Z.partSet[p] ~= nil)
+            table.insert(Z.candRows, tg.btn)
+            Z.candMap[p] = tg
+        end
+    end
+
+    local detecting = false
+    local function Detect()
+        if detecting then return end
+        local root = GetHumanoidRootPart()
+        if not root then
+            Flash(DetectBtn, "⚠ Karakter tidak ada", "🔍 DETEKSI ZONA")
+            return
+        end
+        detecting = true
+        DetectBtn.Text = "🔍 mencari..."
+        task.spawn(function()
+            local pos = root.Position
+            local params = OverlapParams.new()
+            params.FilterType = Enum.RaycastFilterType.Exclude
+            params.FilterDescendantsInstances = {LocalPlayer.Character}
+            local near = workspace:GetPartBoundsInRadius(pos, 8, params)     -- yang menyentuh / menaungi karakter
+            local wide = workspace:GetPartBoundsInRadius(pos, 150, params)   -- zona lain di sekitar (nama / sifat mirip zona)
+            local list, seen = {}, {}
+            local function consider(p, always)
+                if seen[p] or p:IsA("Terrain") then return end
+                local sc = ZoneScore(p)
+                local sz = p.Size
+                if always or (sc >= 3 and math.max(sz.X, sz.Y, sz.Z) >= 8) then
+                    seen[p] = true
+                    local inside = PartContains(p, pos)
+                    list[#list + 1] = {part = p, inside = inside, score = sc + (inside and 4 or 0), size = sz.X * sz.Y * sz.Z}
+                end
+            end
+            for _, p in ipairs(near) do consider(p, true) end
+            for _, p in ipairs(wide) do consider(p, false) end
+
+            -- pencarian dalam: pemicu zona sering CanQuery=false sehingga tak terlihat oleh pencarian ruang di atas
+            local char = LocalPlayer.Character
+            local n = 0
+            for _, d in ipairs(workspace:GetDescendants()) do
+                n += 1
+                if n % 3000 == 0 then
+                    task.wait()
+                    if hubDestroyed then
+                        detecting = false
+                        return
+                    end
+                end
+                if d:IsA("BasePart") and not d.CanQuery and not seen[d] and not d:IsA("Terrain")
+                    and not (char and d:IsDescendantOf(char)) then
+                    local sz = d.Size
+                    if math.max(sz.X, sz.Y, sz.Z) >= 8 and PartContains(d, pos) then
+                        consider(d, true)
+                    end
+                end
+            end
+
+            table.sort(list, function(a, b)
+                if a.score ~= b.score then return a.score > b.score end
+                return a.size > b.size
+            end)
+            for i = #list, 15, -1 do list[i] = nil end
+            detecting = false
+            if hubDestroyed then return end
+            DetectBtn.Text = "🔍 DETEKSI ZONA"
+            ShowCands(list)
+        end)
+    end
+
+    local function PickPartAt(pos)
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+        local ray = cam:ScreenPointToRay(pos.X, pos.Y)
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        if LocalPlayer.Character then params.FilterDescendantsInstances = {LocalPlayer.Character} end
+        local res = workspace:Raycast(ray.Origin, ray.Direction * 5000, params)
+        if not res or not res.Instance or res.Instance:IsA("Terrain") then
+            Flash(TapBtn, "Tidak kena Part", "👆 KETUK PART: ON")
+            return
+        end
+        local p = res.Instance
+        TogglePart(p, not Z.partSet[p])
+        Flash(TapBtn, (Z.partSet[p] and "＋ " or "－ ") .. p.Name, "👆 KETUK PART: ON")
+    end
+
+    local function StopTap()
+        for _, c in ipairs(Z.tapConns) do c:Disconnect() end
+        table.clear(Z.tapConns)
+        Z.tapDown, Z.tapPos = nil, nil
+        Z.tapOn = false
+        TapBtn.Text = "👆 KETUK PART"
+        TapBtn.BackgroundColor3 = BTN_GRAY
+    end
+
+    local function StartTap()
+        if Z.tapOn then return end
+        Z.tapOn = true
+        TapBtn.Text = "👆 KETUK PART: ON"
+        TapBtn.BackgroundColor3 = BTN_BLUE
+        table.insert(Z.tapConns, UserInputService.InputBegan:Connect(function(input, processed)
+            if processed then return end
+            local t = input.UserInputType
+            if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+                Z.tapDown, Z.tapPos, Z.tapTime = input, input.Position, os.clock()
+            end
+        end))
+        table.insert(Z.tapConns, UserInputService.InputEnded:Connect(function(input)
+            if Z.tapDown ~= input then return end
+            Z.tapDown = nil
+            if (input.Position - Z.tapPos).Magnitude > 12 or os.clock() - Z.tapTime > 0.5 then return end
+            PickPartAt(input.Position)
+        end))
+    end
+
+    local function AddFromPath(path)
+        local added = 0
+        for _, o in ipairs(ResolveAll(path)) do
+            if o:IsA("BasePart") then
+                if not Z.partSet[o] then
+                    TogglePart(o, true)
+                    added += 1
+                end
+            else
+                local n = 0
+                for _, d in ipairs(o:GetDescendants()) do
+                    if d:IsA("BasePart") and not Z.partSet[d] then
+                        TogglePart(d, true)
+                        added += 1
+                        n += 1
+                        if n >= 25 then break end
+                    end
+                end
+            end
+        end
+        return added
+    end
+
+    -- ==================================================
+    -- SCAN ISI ZONA
+    -- ==================================================
+    local function GatherParts()
+        local kind = Z.kind
+        if not kind or not Defined(kind) then return nil end
+        local params = OverlapParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        local ex = {}
+        if LocalPlayer.Character then ex[#ex + 1] = LocalPlayer.Character end
+        for _, pl in ipairs(Players:GetPlayers()) do
+            if pl ~= LocalPlayer and pl.Character then ex[#ex + 1] = pl.Character end
+        end
+        params.FilterDescendantsInstances = ex
+        params.MaxParts = 4000
+        local out, seen = {}, {}
+        local function add(p)
+            if not seen[p] and not p:IsA("Terrain") and not Z.partSet[p] then
+                seen[p] = true
+                out[#out + 1] = p
+            end
+        end
+        if kind == "parts" then
+            for _, zp in ipairs(Z.parts) do
+                for _, p in ipairs(workspace:GetPartsInPart(zp, params)) do add(p) end   -- mengikuti bentuk asli Part
+                if Z.extraH > 0 and zp.Size.Y <= 8 then      -- Part pipih: tambah kolom ruang di atasnya
+                    local h = Z.extraH
+                    local cf = zp.CFrame * CFrame.new(0, zp.Size.Y / 2 + h / 2, 0)
+                    for _, p in ipairs(workspace:GetPartBoundsInBox(cf, Vector3.new(zp.Size.X, h, zp.Size.Z), params)) do add(p) end
+                end
+            end
+        elseif kind == "box" then
+            local cf, size = BoxGeom()
+            for _, p in ipairs(workspace:GetPartBoundsInBox(cf, size, params)) do add(p) end
+        elseif kind == "sphere" then
+            for _, p in ipairs(workspace:GetPartBoundsInRadius(Z.center, Z.radius, params)) do add(p) end
+        else
+            local lo, hi = PolyBounds()
+            local size = hi - lo
+            size = Vector3.new(math.max(size.X, 4), math.max(size.Y, 4), math.max(size.Z, 4))
+            for _, p in ipairs(workspace:GetPartBoundsInBox(CFrame.new((lo + hi) / 2), size, params)) do
+                local pp = p.Position
+                if InPoly(pp.X, pp.Z) then add(p) end
+            end
+        end
+        return out
+    end
+
+    local function Base(n)
+        return (n:gsub("[%s_%-]*%d+$", ""))
+    end
+
+    -- "barang" = Part itu sendiri atau Model kecil yang memuatnya; karakter/NPC (Model ber-Humanoid) dilewati
+    local function ItemOf(part)
+        local a = part.Parent
+        while a and a ~= workspace and a ~= game do
+            if a:IsA("Model") and a:FindFirstChildOfClass("Humanoid") then return nil end
+            a = a.Parent
+        end
+        local node = part
+        while true do
+            local parent = node.Parent
+            if not parent or parent == workspace or not parent:IsA("Model") or #parent:GetChildren() > 25 then break end
+            node = parent
+        end
+        return node
+    end
+
+    local function ItemPos(obj)
+        if obj:IsA("BasePart") then return obj.Position end
+        if obj:IsA("Model") then return obj:GetPivot().Position end
+        return nil
+    end
+
+    local function BuildGroups(parts)
+        local groups, seen, npc = {}, {}, 0
+        for _, p in ipairs(parts) do
+            local item = ItemOf(p)
+            if item == nil then
+                npc += 1
+            elseif not seen[item] then
+                seen[item] = true
+                local size = item:IsA("Model") and item:GetExtentsSize() or item.Size
+                if math.max(size.X, size.Y, size.Z) <= Z.maxSize then
+                    local key = Base(item.Name)
+                    if key == "" then key = item.Name end
+                    local g = groups[key]
+                    if not g then
+                        g = {count = 0, list = {}}
+                        groups[key] = g
+                    end
+                    g.count += 1
+                    g.list[#g.list + 1] = item
+                end
+            end
+        end
+        return groups, npc
+    end
+
+    local MAX_ROWS = 20
+    local function ApplyGroups(groups, npc)
+        local keys, total = {}, 0
+        for k, g in pairs(groups) do
+            keys[#keys + 1] = k
+            total += g.count
+        end
+        table.sort(keys, function(a, b)
+            local ca, cb = groups[a].count, groups[b].count
+            if ca ~= cb then return ca > cb end
+            return a < b
+        end)
+        local shown = {}
+        for i = 1, math.min(MAX_ROWS, #keys) do shown[keys[i]] = i end
+        for k, r in pairs(Z.rows) do
+            if not shown[k] then
+                r.tg.btn:Destroy()
+                Z.rows[k] = nil
+            end
+        end
+        for k, i in pairs(shown) do
+            local r = Z.rows[k]
+            if not r then
+                local key = k
+                local tg = ESP.MakeToggle(GroupHolder, key, UDim2.new(1, 0, 0, 22), UDim2.new(0, 0, 0, 0), function(on)
+                    Z.sel[key] = on or nil
+                end)
+                tg.set(Z.sel[key] == true)
+                r = {tg = tg, text = ""}
+                Z.rows[k] = r
+            end
+            r.tg.btn.LayoutOrder = i
+            local text = k .. "  ×" .. groups[k].count
+            if r.text ~= text then
+                r.text = text
+                r.tg.label.Text = text
+            end
+        end
+
+        local chosen = {}
+        for k, g in pairs(groups) do
+            if Z.sel[k] then chosen[#chosen + 1] = k .. " ×" .. g.count end
+        end
+        table.sort(chosen)
+        local line = "Total " .. total .. " objek • " .. #keys .. " jenis"
+        if npc > 0 then line = line .. " • NPC dilewati: " .. npc end
+        if #keys > MAX_ROWS then line = line .. " • " .. (#keys - MAX_ROWS) .. " jenis lain tidak ditampilkan" end
+        line = line .. "\nTarget: " .. (#chosen > 0 and table.concat(chosen, ", ") or "(centang jenis di bawah)")
+        SummaryLbl.Text = line
+    end
+
+    local function DoScan()
+        local parts = GatherParts()
+        if not parts then
+            SummaryLbl.Text = "Atur zona dulu, lalu tekan SCAN."
+            return nil
+        end
+        local groups, npc = BuildGroups(parts)
+        ApplyGroups(groups, npc)
+        return groups
+    end
+
+    Z.setAutoScan = function(on)
+        Z.autoScan = on
+        if on and not Z.scanThread then
+            Z.scanThread = task.spawn(function()
+                while Z.autoScan and not hubDestroyed do
+                    local ok, err = pcall(DoScan)
+                    if not ok and not Z.scanWarned then
+                        Z.scanWarned = true
+                        print("[Zone] Scan: " .. tostring(err))
+                    end
+                    task.wait(0.5)
+                end
+                Z.scanThread = nil
+            end)
+        end
+    end
+
+    -- ==================================================
+    -- PENGAMBILAN
+    -- ==================================================
+    local function PartsOf(obj)
+        if obj:IsA("BasePart") then return {obj} end
+        local out = {}
+        for _, d in ipairs(obj:GetDescendants()) do
+            if d:IsA("BasePart") then
+                out[#out + 1] = d
+                if #out >= 6 then break end
+            end
+        end
+        return out
+    end
+
+    local function ResolveMethod(obj)
+        if Z.method ~= "auto" then return Z.method end
+        if obj:FindFirstChildWhichIsA("ProximityPrompt", true) then return "prompt" end
+        if obj:FindFirstChildWhichIsA("ClickDetector", true) then return "click" end
+        return "touch"
+    end
+
+    -- tahan sebuah tombol sungguhan lewat VirtualInputManager (untuk prompt tanpa fireproximityprompt / tahan E)
+    local function HoldKey(key, seconds)
+        return pcall(function()
+            local vim = game:GetService("VirtualInputManager")
+            vim:SendKeyEvent(true, key, false, game)
+            task.wait(seconds)
+            vim:SendKeyEvent(false, key, false, game)
+        end)
+    end
+
+    local function Pickup(obj)
+        local root = GetHumanoidRootPart()
+        if not root then return end
+        local method = ResolveMethod(obj)
+        if method == "prompt" then
+            local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+            if not prompt or not prompt.Enabled then return end
+            local ok = false
+            if typeof(fireproximityprompt) == "function" then
+                ok = pcall(fireproximityprompt, prompt)
+            end
+            if not ok then
+                local key = prompt.KeyboardKeyCode
+                if key == Enum.KeyCode.Unknown then key = Enum.KeyCode.E end
+                HoldKey(key, math.max(0.05, prompt.HoldDuration) + 0.15)
+            end
+        elseif method == "click" then
+            local cd = obj:FindFirstChildWhichIsA("ClickDetector", true)
+            if cd and typeof(fireclickdetector) == "function" then pcall(fireclickdetector, cd) end
+        elseif method == "hold" then
+            HoldKey(Enum.KeyCode.E, Z.holdTime)
+        else
+            if typeof(firetouchinterest) == "function" then
+                for _, part in ipairs(PartsOf(obj)) do
+                    pcall(function()
+                        firetouchinterest(root, part, 0)
+                        firetouchinterest(root, part, 1)
+                    end)
+                end
+            end
+        end
+    end
+
+    -- ==================================================
+    -- LOOP AUTO ZONA
+    -- ==================================================
+    local function SetRun(text)
+        RunLbl.Text = "Status: " .. text .. "\nDiproses: " .. Z.stats.picked .. " (hilang dari game: " .. Z.stats.gone .. ")  |  Disetor: " .. Z.stats.deposits .. "x"
+    end
+
+    local function TeleportTo(pos)
+        local root = GetHumanoidRootPart()
+        if not root then return end
+        root.CFrame = CFrame.new(pos + Vector3.new(0, 2, 0)) * root.CFrame.Rotation
+        root.AssemblyLinearVelocity = Vector3.zero
+    end
+
+    local function RunLoop()
+        local sinceDeposit = 0
+        while Z.running and not hubDestroyed do
+            local root = GetHumanoidRootPart()
+            local parts = root and GatherParts() or nil
+            if not root then
+                SetRun("menunggu karakter...")
+                task.wait(0.5)
+            elseif not parts then
+                SetRun("zona belum diatur")
+                task.wait(0.5)
+            else
+                local groups, npc = BuildGroups(parts)
+                ApplyGroups(groups, npc)
+                local cands = {}
+                for key, g in pairs(groups) do
+                    if Z.sel[key] then
+                        for _, it in ipairs(g.list) do
+                            local pos = ItemPos(it)
+                            if pos then cands[#cands + 1] = {obj = it, pos = pos, key = key} end
+                        end
+                    end
+                end
+
+                if #cands == 0 then
+                    table.clear(Z.visited)
+                    SetRun("menunggu barang muncul di zona...")
+                    if not Contains(root.Position) then
+                        local anchor = ZoneAnchor()          -- barang acak muncul selama pemain ada di zona
+                        if anchor then TeleportTo(anchor) end
+                    end
+                    task.wait(0.4)
+                else
+                    local best, bestD = nil, math.huge
+                    for _, c in ipairs(cands) do
+                        if not Z.visited[c.obj] then
+                            local d = (c.pos - root.Position).Magnitude
+                            if d < bestD then best, bestD = c, d end
+                        end
+                    end
+                    if not best then                          -- semua pernah dikunjungi tapi masih ada: ulangi dari awal
+                        table.clear(Z.visited)
+                        for _, c in ipairs(cands) do
+                            local d = (c.pos - root.Position).Magnitude
+                            if d < bestD then best, bestD = c, d end
+                        end
+                    end
+                    Z.visited[best.obj] = true
+                    SetRun("mengambil " .. best.key .. " (" .. #cands .. " target tersisa)")
+                    TeleportTo(best.pos)
+                    task.wait(0.15)
+                    Pickup(best.obj)
+                    task.wait(Z.pickDelay)
+                    Z.stats.picked += 1
+                    local char = LocalPlayer.Character
+                    if not best.obj:IsDescendantOf(game) or (char and best.obj:IsDescendantOf(char)) then
+                        Z.stats.gone += 1                -- benar-benar terambil (hilang atau menempel ke karakter)
+                    end
+                    sinceDeposit += 1
+
+                    if Z.depositCF and sinceDeposit >= Z.depositEvery then
+                        SetRun("menyetor ke titik setor...")
+                        local r2 = GetHumanoidRootPart()
+                        if r2 then
+                            r2.CFrame = Z.depositCF
+                            r2.AssemblyLinearVelocity = Vector3.zero
+                        end
+                        task.wait(Z.depositWait)
+                        Z.stats.deposits += 1
+                        sinceDeposit = 0
+                    end
+                end
+            end
+        end
+    end
+
+    local function StopZone(skipReturn)
+        local was = Z.running
+        Z.running = false
+        if Z.thread then
+            if Z.thread ~= coroutine.running() then pcall(task.cancel, Z.thread) end
+            Z.thread = nil
+        end
+        RunBtn.Text = "▶ MULAI AUTO ZONA"
+        RunBtn.BackgroundColor3 = BTN_GREEN
+        if was then
+            local origin = Z.origin
+            Z.origin = nil
+            if origin and not skipReturn and not hubDestroyed then
+                local root = GetHumanoidRootPart()
+                if root then
+                    root.CFrame = origin + Vector3.new(0, 2, 0)      -- kembali ke posisi awal + 2 stud
+                    root.AssemblyLinearVelocity = Vector3.zero
+                end
+            end
+            if not hubDestroyed then SetRun("berhenti") end
+        end
+    end
+    ZoneStop = StopZone
+
+    local function StartZone()
+        if Z.running then return end
+        if not Z.kind or not Defined(Z.kind) then
+            Flash(RunBtn, "⚠ Atur zona dulu", "▶ MULAI AUTO ZONA")
+            return
+        end
+        if next(Z.sel) == nil then
+            Flash(RunBtn, "⚠ Scan lalu centang jenis barang", "▶ MULAI AUTO ZONA")
+            return
+        end
+        local root = GetHumanoidRootPart()
+        if not root then return end
+        StopCollectAll()                                   -- hindari rebutan kendali karakter
+        if StopTeleport then StopTeleport(true) end
+        Z.origin = root.CFrame
+        Z.stats = {picked = 0, gone = 0, deposits = 0}
+        table.clear(Z.visited)
+        Z.running = true
+        RunBtn.Text = "■ BERHENTI"
+        RunBtn.BackgroundColor3 = BTN_RED
+        Z.thread = task.spawn(function()
+            local ok, err = xpcall(RunLoop, debug.traceback)
+            if not ok then print("[Zone] Error: " .. tostring(err)) end
+            Z.thread = nil
+            StopZone()
+        end)
+    end
+
+    -- ==================================================
+    -- SAMBUNGKAN TOMBOL
+    -- ==================================================
+    for kind, btn in pairs(KindBtns) do
+        btn.MouseButton1Click:Connect(function()
+            if Defined(kind) then
+                SetKind(kind)
+            else
+                Flash(btn, "belum diatur", btn.Text)
+            end
+        end)
+    end
+
+    DetectBtn.MouseButton1Click:Connect(Detect)
+    TapBtn.MouseButton1Click:Connect(function()
+        if Z.tapOn then StopTap() else StartTap() end
+    end)
+    PathAddBtn.MouseButton1Click:Connect(function()
+        if PathBox.Text == "" then
+            Flash(PathAddBtn, "isi path", "+ PATH")
+            return
+        end
+        local n = AddFromPath(PathBox.Text)
+        Flash(PathAddBtn, n > 0 and ("+" .. n .. " Part") or "tidak ketemu", "+ PATH")
+    end)
+
+    BtnA.MouseButton1Click:Connect(function()
+        local root = GetHumanoidRootPart()
+        if not root then return end
+        Z.cA = root.Position
+        if Z.cB then SetKind("box") else UpdateStatus() UpdateVisual() end
+        Flash(BtnA, "A ✔", "Set Sudut A")
+    end)
+    BtnB.MouseButton1Click:Connect(function()
+        local root = GetHumanoidRootPart()
+        if not root then return end
+        Z.cB = root.Position
+        if Z.cA then SetKind("box") else UpdateStatus() UpdateVisual() end
+        Flash(BtnB, "B ✔", "Set Sudut B")
+    end)
+    HBox.FocusLost:Connect(function()
+        local v = tonumber(HBox.Text)
+        if v then Z.extraH = math.max(0, v) end
+        HBox.Text = Fmt(Z.extraH)
+        UpdateStatus()
+        UpdateVisual()
+    end)
+    BtnC.MouseButton1Click:Connect(function()
+        local root = GetHumanoidRootPart()
+        if not root then return end
+        Z.center = root.Position
+        SetKind("sphere")
+        Flash(BtnC, "Tengah ✔", "Set Titik Tengah")
+    end)
+    RBox.FocusLost:Connect(function()
+        local v = tonumber(RBox.Text)
+        if v then Z.radius = math.max(1, v) end
+        RBox.Text = Fmt(Z.radius)
+        UpdateStatus()
+        UpdateVisual()
+    end)
+    BtnPAdd.MouseButton1Click:Connect(function()
+        local root = GetHumanoidRootPart()
+        if not root then return end
+        Z.poly[#Z.poly + 1] = root.Position
+        if #Z.poly >= 3 then SetKind("poly") else UpdateStatus() UpdateVisual() end
+        Flash(BtnPAdd, "Titik " .. #Z.poly .. " ✔", "+ Titik Poligon (posisi sekarang)")
+    end)
+    BtnPReset.MouseButton1Click:Connect(function()
+        table.clear(Z.poly)
+        if Z.kind == "poly" then
+            SetKind(FallbackKind())
+        else
+            UpdateStatus()
+            UpdateVisual()
+        end
+    end)
+    BtnClear.MouseButton1Click:Connect(function()
+        StopZone()
+        StopTap()
+        ClearCands()
+        for _, p in ipairs(Z.parts) do Z.partSet[p] = nil end
+        table.clear(Z.parts)
+        Z.cA, Z.cB, Z.center = nil, nil, nil
+        table.clear(Z.poly)
+        SetKind(nil)
+        SummaryLbl.Text = "Atur zona dulu, lalu tekan SCAN."
+    end)
+
+    ScanBtn.MouseButton1Click:Connect(function()
+        if not DoScan() then Flash(ScanBtn, "⚠ Atur zona dulu", "🔄 SCAN") end
+    end)
+    MaxBox.FocusLost:Connect(function()
+        local v = tonumber(MaxBox.Text)
+        if v then Z.maxSize = math.max(1, v) end
+        MaxBox.Text = Fmt(Z.maxSize)
+    end)
+
+    MethodBtn.MouseButton1Click:Connect(function()
+        methodIdx = methodIdx % #METHODS + 1
+        Z.method = METHODS[methodIdx][1]
+        MethodBtn.Text = "Cara ambil: " .. METHODS[methodIdx][2]
+    end)
+    local function BindNum(box, field, minv)
+        box.FocusLost:Connect(function()
+            local v = tonumber(box.Text)
+            if v then Z[field] = math.max(v, minv) end
+            box.Text = Fmt(Z[field])
+        end)
+    end
+    BindNum(PickBox, "pickDelay", 0)
+    BindNum(HoldBox, "holdTime", 0.1)
+    BindNum(EveryBox, "depositEvery", 1)
+    BindNum(WaitBox, "depositWait", 0)
+
+    BtnDep.MouseButton1Click:Connect(function()
+        local root = GetHumanoidRootPart()
+        if not root then return end
+        Z.depositCF = root.CFrame
+        local p = root.Position
+        DepLbl.Text = string.format("Titik setor: %.0f, %.0f, %.0f", p.X, p.Y, p.Z)
+        UpdateVisual()
+    end)
+    BtnDepClr.MouseButton1Click:Connect(function()
+        Z.depositCF = nil
+        DepLbl.Text = "Titik setor: belum diatur (barang tidak disetor)"
+        UpdateVisual()
+    end)
+
+    RunBtn.MouseButton1Click:Connect(function()
+        if Z.running then StopZone() else StartZone() end
+    end)
+
+    -- Bersih saat Shutdown: berhenti tanpa teleport, putus semua koneksi, buang visual
+    table.insert(cleanups, function()
+        Z.autoScan = false
+        StopZone(true)
+        StopTap()
+        if Z.vis then
+            Z.vis:Destroy()
+            Z.vis = nil
+        end
+        ZoneStop = nil
+    end)
+
+    UpdateStatus()
+end)()
 
 -- ========== GLOBAL CONTROL REMOTE ==========
 StartAllBtn.MouseButton1Click:Connect(function()
@@ -4090,6 +5356,7 @@ local function StopEverything()
     end
     StopCollectAll()
     if StopTeleport then StopTeleport() end
+    if ZoneStop then ZoneStop() end
 end
 
 StopAllBtn.MouseButton1Click:Connect(StopEverything)
@@ -4121,16 +5388,19 @@ local function SwitchTab(tab)
     TabRemoteContainer.Visible = (tab == "remote")
     TabCollectContainer.Visible = (tab == "collect")
     TabTeleportContainer.Visible = (tab == "teleport")
+    TabZoneContainer.Visible = (tab == "zone")
     TabHomeBtn.BackgroundColor3 = (tab == "home") and TAB_ACTIVE or TAB_IDLE
     TabRemoteBtn.BackgroundColor3 = (tab == "remote") and TAB_ACTIVE or TAB_IDLE
     TabCollectBtn.BackgroundColor3 = (tab == "collect") and TAB_ACTIVE or TAB_IDLE
     TabTeleportBtn.BackgroundColor3 = (tab == "teleport") and TAB_ACTIVE or TAB_IDLE
+    TabZoneBtn.BackgroundColor3 = (tab == "zone") and TAB_ACTIVE or TAB_IDLE
 end
 
 TabHomeBtn.MouseButton1Click:Connect(function() SwitchTab("home") end)
 TabRemoteBtn.MouseButton1Click:Connect(function() SwitchTab("remote") end)
 TabCollectBtn.MouseButton1Click:Connect(function() SwitchTab("collect") end)
 TabTeleportBtn.MouseButton1Click:Connect(function() SwitchTab("teleport") end)
+TabZoneBtn.MouseButton1Click:Connect(function() SwitchTab("zone") end)
 SwitchTab("home")
 
 -- Status singkat di Tab Home
