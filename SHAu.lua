@@ -4297,21 +4297,36 @@ end)()
     -- ===== KARTU 3: PENGAMBILAN & SETOR =====
     local CardPick = NewCard(3, "🎒 PENGAMBILAN & SETOR")
     local METHODS = {
-        {"auto", "AUTO (dideteksi per barang)"},
-        {"touch", "SENTUH"},
-        {"prompt", "PROMPT (tahan tombol prompt)"},
-        {"click", "KLIK (ClickDetector)"},
-        {"hold", "TAHAN TOMBOL E (manual)"},
+        {"auto", "Auto (deteksi per barang)"},
+        {"approach", "Dekati saja"},
+        {"press", "Tekan E (sekali)"},
+        {"hold", "Tahan E"},
+        {"prompt", "Prompt (otomatis)"},
+        {"touch", "Sentuh"},
+        {"click", "Klik"},
     }
-    local methodIdx = 1
-    local MethodBtn = MakeButton(NewRow(CardPick, 1, 24), "Cara ambil: " .. METHODS[1][2], BTN_BLUE, UDim2.new(1, 0, 1, 0))
+    local MethodRow = NewRow(CardPick, 1, 14 + 4 * 24)
+    MakeLabel(MethodRow, "Cara ambil (pilih satu):", UDim2.new(1, 0, 0, 14), nil, 9)
+    local methodToggles = {}
+    for i, m in ipairs(METHODS) do
+        local key = m[1]
+        local col, rowN = (i - 1) % 2, math.floor((i - 1) / 2)
+        methodToggles[key] = ESP.MakeToggle(MethodRow, m[2], UDim2.new(0.49, 0, 0, 22), UDim2.new(col * 0.51, 0, 0, 16 + rowN * 24), function(on)
+            if not on then return false end          -- harus selalu ada satu yang terpilih
+            Z.method = key
+            for k, t in pairs(methodToggles) do
+                if k ~= key then t.set(false) end
+            end
+        end)
+    end
+    methodToggles.auto.set(true)
     local function BoxRow(order, label, default)
         local row = NewRow(CardPick, order, 22)
         MakeLabel(row, label, UDim2.new(0.62, 0, 1, 0), nil, 9)
         return MakeBox(row, default, default, UDim2.new(0.3, 0, 1, 0), UDim2.new(0.64, 0, 0, 0))
     end
     local PickBox = BoxRow(2, "Jeda setelah ambil (dtk):", "0.4")
-    local HoldBox = BoxRow(3, "Lama tahan E untuk cara TAHAN (dtk):", "1.5")
+    local HoldBox = BoxRow(3, "Lama Tahan E (dtk, 0 = ikuti prompt):", "1.5")
     local RowDep = NewRow(CardPick, 4, 24)
     local BtnDep = MakeButton(RowDep, "📍 SET TITIK SETOR (posisi sekarang)", BTN_ORANGE, UDim2.new(0.64, 0, 1, 0))
     local BtnDepClr = MakeButton(RowDep, "✖ Hapus", BTN_GRAY, UDim2.new(0.34, 0, 1, 0), UDim2.new(0.66, 0, 0, 0))
@@ -5020,23 +5035,33 @@ end)()
         local root = GetHumanoidRootPart()
         if not root then return end
         local method = ResolveMethod(obj)
-        if method == "prompt" then
-            local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+        local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+        -- tombol yang dipakai: milik prompt barang itu bila ada, kalau tidak E
+        local key = prompt and prompt.KeyboardKeyCode or Enum.KeyCode.Unknown
+        if key == Enum.KeyCode.Unknown then key = Enum.KeyCode.E end
+
+        if method == "approach" then
+            return                                       -- cukup didekati: barang terambil lewat jarak
+        elseif method == "press" then
+            HoldKey(key, 0.08)                           -- tekan sekali
+        elseif method == "hold" then
+            local secs = Z.holdTime
+            if secs <= 0 then                            -- 0 = ikuti lama tahan milik prompt
+                secs = prompt and (prompt.HoldDuration + 0.2) or 1.5
+            end
+            HoldKey(key, secs)
+        elseif method == "prompt" then
             if not prompt or not prompt.Enabled then return end
             local ok = false
             if typeof(fireproximityprompt) == "function" then
                 ok = pcall(fireproximityprompt, prompt)
             end
             if not ok then
-                local key = prompt.KeyboardKeyCode
-                if key == Enum.KeyCode.Unknown then key = Enum.KeyCode.E end
-                HoldKey(key, math.max(0.05, prompt.HoldDuration) + 0.15)
+                HoldKey(key, math.max(0.05, prompt.HoldDuration) + 0.15)   -- tekan / tahan sesuai prompt
             end
         elseif method == "click" then
             local cd = obj:FindFirstChildWhichIsA("ClickDetector", true)
             if cd and typeof(fireclickdetector) == "function" then pcall(fireclickdetector, cd) end
-        elseif method == "hold" then
-            HoldKey(Enum.KeyCode.E, Z.holdTime)
         else
             if typeof(firetouchinterest) == "function" then
                 for _, part in ipairs(PartsOf(obj)) do
@@ -5289,11 +5314,6 @@ end)()
         MaxBox.Text = Fmt(Z.maxSize)
     end)
 
-    MethodBtn.MouseButton1Click:Connect(function()
-        methodIdx = methodIdx % #METHODS + 1
-        Z.method = METHODS[methodIdx][1]
-        MethodBtn.Text = "Cara ambil: " .. METHODS[methodIdx][2]
-    end)
     local function BindNum(box, field, minv)
         box.FocusLost:Connect(function()
             local v = tonumber(box.Text)
@@ -5302,7 +5322,7 @@ end)()
         end)
     end
     BindNum(PickBox, "pickDelay", 0)
-    BindNum(HoldBox, "holdTime", 0.1)
+    BindNum(HoldBox, "holdTime", 0)
     BindNum(EveryBox, "depositEvery", 1)
     BindNum(WaitBox, "depositWait", 0)
 
