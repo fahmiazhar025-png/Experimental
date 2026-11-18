@@ -4520,18 +4520,70 @@ end)()
         s.Parent = folder
     end
 
-    local function AddBar(folder, base, a, b, color)
+    -- Garis tebal & hampir tidak transparan (terlihat jelas, tembus tembok)
+    local function AddBar(folder, base, a, b, color, thick)
         local d = (b - a).Magnitude
         if d < 0.1 then return end
+        local dir = (b - a) / d
+        local upv = (math.abs(dir.Y) > 0.99) and Vector3.xAxis or Vector3.yAxis   -- garis tegak lurus: hindari lookAt degenerat
+        local t = thick or 0.5
         local bar = Instance.new("BoxHandleAdornment")
         bar.Adornee = base
-        bar.Size = Vector3.new(0.4, 0.4, d)
-        bar.CFrame = base.CFrame:ToObjectSpace(CFrame.lookAt((a + b) / 2, b))
+        bar.Size = Vector3.new(t, t, d)
+        bar.CFrame = base.CFrame:ToObjectSpace(CFrame.lookAt((a + b) / 2, b, upv))
         bar.Color3 = color
-        bar.Transparency = 0.2
+        bar.Transparency = 0.02
         bar.AlwaysOnTop = true
         bar.ZIndex = 1
         bar.Parent = folder
+    end
+
+    -- Jaring-jaring kubus: 12 rusuk
+    local function AddWireBox(folder, base, cf, size, color, thick)
+        local h = size / 2
+        local c = {}
+        for ix = 0, 1 do
+            for iy = 0, 1 do
+                for iz = 0, 1 do
+                    c[ix * 4 + iy * 2 + iz] = cf * Vector3.new(
+                        (ix == 0 and -1 or 1) * h.X,
+                        (iy == 0 and -1 or 1) * h.Y,
+                        (iz == 0 and -1 or 1) * h.Z)
+                end
+            end
+        end
+        for i = 0, 7 do
+            for _, bit in ipairs({1, 2, 4}) do
+                if i % (bit * 2) < bit then
+                    AddBar(folder, base, c[i], c[i + bit], color, thick)
+                end
+            end
+        end
+    end
+
+    -- Penanda sudut A / B: bola besar + jaring kubus + tiang tinggi + huruf besar di atasnya
+    local function AddCornerMarker(folder, base, pos, color, letter)
+        AddSphere(folder, base, pos, 1.5, color)
+        AddWireBox(folder, base, CFrame.new(pos), Vector3.new(4, 4, 4), color, 0.4)
+        AddBar(folder, base, pos - Vector3.new(0, 4, 0), pos + Vector3.new(0, 9, 0), color, 0.6)
+        local bb = Instance.new("BillboardGui")
+        bb.Name = "Label" .. letter
+        bb.Adornee = base
+        bb.AlwaysOnTop = true
+        bb.LightInfluence = 0
+        bb.Size = UDim2.fromOffset(48, 48)
+        bb.StudsOffsetWorldSpace = pos + Vector3.new(0, 11, 0) - base.Position
+        local lbl = Instance.new("TextLabel")
+        lbl.Parent = bb
+        lbl.Size = UDim2.new(1, 0, 1, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = letter
+        lbl.TextColor3 = Color3.new(1, 1, 1)
+        lbl.TextStrokeColor3 = color
+        lbl.TextStrokeTransparency = 0
+        lbl.Font = Enum.Font.GothamBlack
+        lbl.TextSize = 34
+        bb.Parent = folder
     end
 
     local function UpdateVisual()
@@ -4565,10 +4617,11 @@ end)()
             box.Size = size
             box.CFrame = base.CFrame:ToObjectSpace(cf)
             box.Color3 = ZCOL
-            box.Transparency = 0.88
+            box.Transparency = 0.82
             box.AlwaysOnTop = true
             box.ZIndex = 1
             box.Parent = folder
+            AddWireBox(folder, base, cf, size, ZCOL, 0.5)     -- rangka kotak zona yang tegas
         elseif Z.kind == "sphere" and Defined("sphere") then
             local s = Instance.new("SphereHandleAdornment")
             s.Adornee = base
@@ -4582,9 +4635,9 @@ end)()
         end
 
         -- penanda titik (sudut, tengah, poligon, setor)
-        if Z.cA then AddSphere(folder, base, Z.cA, 0.8, ORANGE) end
-        if Z.cB then AddSphere(folder, base, Z.cB, 0.8, ORANGE) end
-        if Z.center then AddSphere(folder, base, Z.center, 0.8, ORANGE) end
+        if Z.cA then AddCornerMarker(folder, base, Z.cA, ORANGE, "A") end
+        if Z.cB then AddCornerMarker(folder, base, Z.cB, Color3.fromRGB(60, 170, 255), "B") end
+        if Z.center then AddSphere(folder, base, Z.center, 1.2, ORANGE) end
         local n = #Z.poly
         for i, p in ipairs(Z.poly) do
             AddSphere(folder, base, p, 0.8, ZCOL)
