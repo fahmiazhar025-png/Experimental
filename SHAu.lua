@@ -4279,10 +4279,10 @@ end)()
         sel = {}, rows = {}, maxSize = 40,
         autoScan = false, scanThread = nil,
         candRows = {}, candMap = {},
-        method = "auto", pickDelay = 0.4, holdTime = 1.5,
+        method = "auto", pickDelay = 0.4, holdTime = 1.5, confirmWait = 2.5, maxTries = 3,
         depositCF = nil, depositEvery = 1, depositWait = 1.5,
         running = false, thread = nil, origin = nil,
-        stats = {picked = 0, gone = 0, deposits = 0},
+        stats = {picked = 0, gone = 0, failed = 0, deposits = 0},
         visited = setmetatable({}, {__mode = "k"}),
         tapConns = {}, tapOn = false, tapDown = nil, tapPos = nil, tapTime = 0,
     }
@@ -4416,6 +4416,8 @@ end)()
     DepLbl.Font = Enum.Font.Gotham
     local EveryBox = BoxRow(6, "Setor tiap (barang):", "1")
     local WaitBox = BoxRow(7, "Jeda di titik setor (dtk):", "1.5")
+    local ConfirmBox = BoxRow(8, "Tunggu konfirmasi (dtk):", "2.5")
+    local TriesBox = BoxRow(9, "Maks percobaan per item:", "3")
 
     -- ===== KARTU 4: JALANKAN =====
     local CardRun = NewCard(4, "▶ AUTO ZONA")
@@ -5243,7 +5245,7 @@ end)()
     -- LOOP AUTO ZONA
     -- ==================================================
     local function SetRun(text)
-        RunLbl.Text = "Status: " .. text .. "\nDiproses: " .. Z.stats.picked .. " (hilang dari game: " .. Z.stats.gone .. ")  |  Disetor: " .. Z.stats.deposits .. "x"
+        RunLbl.Text = "Status: " .. text .. "\nTerambil: " .. Z.stats.picked .. "  |  Gagal: " .. Z.stats.failed .. "  |  Disetor: " .. Z.stats.deposits .. "x"
     end
 
     local function TeleportTo(pos)
@@ -5251,6 +5253,29 @@ end)()
         if not root then return end
         root.CFrame = CFrame.new(pos + Vector3.new(0, 2, 0)) * root.CFrame.Rotation
         root.AssemblyLinearVelocity = Vector3.zero
+    end
+
+    -- Barang dianggap SUDAH DIAMBIL bila: hilang dari game, menempel ke karakter (terangkat / masuk tas),
+    -- atau bergeser jauh dari tempat semula tetapi masih dekat karakter (dibawa).
+    local function ItemTaken(obj, startPos)
+        if not obj:IsDescendantOf(game) then return true end
+        local char = LocalPlayer.Character
+        if char and obj:IsDescendantOf(char) then return true end
+        local pos, root = ItemPos(obj), GetHumanoidRootPart()
+        if pos and root and startPos and (pos - startPos).Magnitude > 6 and (pos - root.Position).Magnitude <= 10 then
+            return true
+        end
+        return false
+    end
+
+    -- Tunggu sampai terkonfirmasi diambil (maks timeout detik); false bila tetap ada di tempatnya
+    local function WaitTaken(obj, startPos, timeout)
+        local t0 = os.clock()
+        while true do
+            if ItemTaken(obj, startPos) then return true end
+            if not Z.running or hubDestroyed or os.clock() - t0 >= timeout then return false end
+            task.wait(0.1)
+        end
     end
 
     local function RunLoop()
@@ -5302,18 +5327,34 @@ end)()
                     end
                     Z.visited[best.obj] = true
                     SetRun("mengambil " .. best.key .. " (" .. #cands .. " target tersisa)")
-                    TeleportTo(best.pos)
-                    task.wait(0.15)
-                    Pickup(best.obj)
-                    task.wait(Z.pickDelay)
-                    Z.stats.picked += 1
-                    local char = LocalPlayer.Character
-                    if not best.obj:IsDescendantOf(game) or (char and best.obj:IsDescendantOf(char)) then
-                        Z.stats.gone += 1                -- benar-benar terambil (hilang atau menempel ke karakter)
+                    local obj, startPos = best.obj, best.pos
+                    local maxTries = math.max(1, math.floor(Z.maxTries))
+                    local taken = false
+                    for attempt = 1, maxTries do
+                        if not Z.running or hubDestroyed then break end
+                        if ItemTaken(obj, startPos) then
+                            taken = true
+                            break
+                        end
+                        TeleportTo(ItemPos(obj) or startPos)
+                        task.wait(0.15)
+                        Pickup(obj)
+                        task.wait(Z.pickDelay)
+                        -- CEK DULU: sudah hilang / terangkat? baru kembali dan pindah ke item lain
+                        SetRun("memeriksa " .. best.key .. " (percobaan " .. attempt .. "/" .. maxTries .. ")...")
+                        taken = WaitTaken(obj, startPos, Z.confirmWait)
+                        if taken then break end
                     end
-                    sinceDeposit += 1
+                    if taken then
+                        Z.stats.picked += 1
+                        Z.stats.gone += 1
+                        sinceDeposit += 1
+                    elseif Z.running then
+                        Z.stats.failed += 1
+                        SetRun(best.key .. " belum bisa diambil, pindah ke item lain")
+                    end
 
-                    if Z.depositCF and sinceDeposit >= Z.depositEvery then
+                    if taken and Z.depositCF and sinceDeposit >= Z.depositEvery then
                         SetRun("menyetor ke titik setor...")
                         local r2 = GetHumanoidRootPart()
                         if r2 then
@@ -5368,7 +5409,7 @@ end)()
         StopCollectAll()                                   -- hindari rebutan kendali karakter
         if StopTeleport then StopTeleport(true) end
         Z.origin = root.CFrame
-        Z.stats = {picked = 0, gone = 0, deposits = 0}
+        Z.stats = {picked = 0, gone = 0, failed = 0, deposits = 0}
         table.clear(Z.visited)
         Z.running = true
         RunBtn.Text = "■ BERHENTI"
@@ -5490,6 +5531,8 @@ end)()
     BindNum(HoldBox, "holdTime", 0)
     BindNum(EveryBox, "depositEvery", 1)
     BindNum(WaitBox, "depositWait", 0)
+    BindNum(ConfirmBox, "confirmWait", 0.3)
+    BindNum(TriesBox, "maxTries", 1)
 
     BtnDep.MouseButton1Click:Connect(function()
         local root = GetHumanoidRootPart()
