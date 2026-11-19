@@ -384,6 +384,52 @@ PathTool.Group = function(obj)
     return table.concat(parts, "."), wild
 end
 
+-- ===== KESATUAN OBJEK: musuh/NPC atau barang yang tersusun dari banyak bagian =====
+-- Path ke SATU BAGIAN (mis. Workspace.Enemies.Bandit[*].UpperTorso) dinaikkan menjadi objek utuhnya (Bandit):
+--   1) bagian dari model ber-Humanoid -> model Humanoid terdekat (NPC / musuh)
+--   2) selain itu, naik selama induknya Model kecil (barang bersusun beberapa bagian)
+-- Beberapa bagian dari objek yang sama dihitung SATU; yang Humanoid-nya sudah mati dianggap hilang.
+PathTool.Unit = function(obj, sizeCache)
+    local node = obj
+    while node and node ~= workspace and node ~= game do
+        if node:IsA("Model") and node:FindFirstChildOfClass("Humanoid") then return node end
+        node = node.Parent
+    end
+    local cur, steps = obj, 0
+    while steps < 6 do
+        local parent = cur.Parent
+        if not parent or parent == workspace or not parent:IsA("Model") then break end
+        if #parent:GetChildren() > 40 then break end            -- wadah besar (peta, folder berisi banyak)
+        local mag = sizeCache and sizeCache[parent]
+        if mag == nil then
+            local ok, size = pcall(function() return parent:GetExtentsSize() end)
+            mag = ok and size.Magnitude or math.huge
+            if sizeCache then sizeCache[parent] = mag end
+        end
+        if mag > 80 then break end
+        cur = parent
+        steps += 1
+    end
+    return cur
+end
+
+PathTool.Units = function(list)
+    local out, seen, cache = {}, {}, {}
+    for _, o in ipairs(list) do
+        local u = PathTool.Unit(o, cache)
+        if not seen[u] then
+            seen[u] = true
+            out[#out + 1] = u
+        end
+    end
+    return out
+end
+
+PathTool.Alive = function(unit)
+    local hum = unit:IsA("Model") and unit:FindFirstChildOfClass("Humanoid") or nil
+    return hum == nil or hum.Health > 0
+end
+
 -- Objek lain yang "sejenis" dengan path ini: anak-anak container yang namanya sama dengan segmen terakhir.
 -- Dipakai mode Follow untuk pindah ke objek lain saat objek sekarang hilang.
 PathTool.Siblings = function(pathStr)
@@ -612,6 +658,13 @@ ESP.UpdateEntry = function(e, cam, vp, origin, now, rainbow)
     if now >= e.nextResolve then        -- pencarian dibatasi 2x/detik
         e.nextResolve = now + 0.5
         local objs = ResolveAll(path)
+        if e.unitFn and e.unitFn() then                 -- slot Follow: kelompokkan bagian menjadi objek utuh
+            local alive = {}
+            for _, o in ipairs(PathTool.Units(objs)) do
+                if PathTool.Alive(o) then alive[#alive + 1] = o end
+            end
+            objs = alive
+        end
         if #objs > ESP.MAX_ITEMS then   -- terlalu banyak: ambil yang terdekat
             local dist = {}
             for _, o in ipairs(objs) do
@@ -845,7 +898,7 @@ ESP.SetRainbow = function(e, on)
 end
 
 -- canChange() boleh mengembalikan false untuk menolak (mis. slot dikunci)
-ESP.MakeColorPicker = function(parent, pos, entry, canChange)
+ESP.MakeColorPicker = function(parent, pos, entry, canChange, onChange)
     local row = Instance.new("Frame")
     row.Parent = parent
     row.Size = UDim2.new(1, 0, 0, 22)
@@ -894,6 +947,7 @@ ESP.MakeColorPicker = function(parent, pos, entry, canChange)
             if canChange and canChange() == false then return end
             ESP.SetColor(entry, col)
             mark(col)
+            if onChange then onChange(col) end
         end)
     end
 
@@ -1863,15 +1917,16 @@ local function FollowAcquire(s, rootPos, now)
         s.followNextScan = 0
     end
     local t = s.followTarget
-    if t and t:IsDescendantOf(game) and ESP.CF(t) then return t end
+    if t and t:IsDescendantOf(game) and ESP.CF(t) and PathTool.Alive(t) then return t end   -- mati = dianggap hilang
     s.followTarget = nil
     if now < (s.followNextScan or 0) then return nil end
     s.followNextScan = now + 0.25
 
     -- path bisa mencakup banyak objek (Nama[*]) -> pilih yang terdekat; path biasa -> objeknya sendiri
     local cand, bestD = nil, math.huge
-    for _, c in ipairs(ResolveAll(path)) do
-        local p = ESP.CF(c) and ESP.Pos(c)
+    -- bagian-bagian (UpperTorso, Head, ...) otomatis dikelompokkan menjadi satu objek utuh (mis. Bandit)
+    for _, c in ipairs(PathTool.Units(ResolveAll(path))) do
+        local p = PathTool.Alive(c) and ESP.CF(c) and ESP.Pos(c)
         if p then
             local dd = (p - rootPos).Magnitude
             if dd < bestD then
@@ -1881,8 +1936,8 @@ local function FollowAcquire(s, rootPos, now)
     end
     if not cand then
         local _, list = PathTool.Siblings(path)
-        for _, c in ipairs(list) do
-            local p = ESP.Pos(c)
+        for _, c in ipairs(PathTool.Units(list)) do
+            local p = PathTool.Alive(c) and ESP.Pos(c)
             if p then
                 local dd = (p - rootPos).Magnitude
                 if dd < bestD then
@@ -2578,6 +2633,7 @@ local function CreateCollectSlot()
         if slotData.useSlotName then return SlotNameBox.Text end   -- nama ESP = nama slot
         return nil
     end)
+    slotData.espEntry.unitFn = function() return slotData.kind == "follow" end
     slotData.espToggles = {}
     slotData.nameToggle = ESP.MakeToggle(SlotWrapper, "Nama Objek sesuai Nama Slot", UDim2.new(1, -6, 0, 20), UDim2.new(0, 3, 0, 34), function(on)
         if slotData.locked then return false end
@@ -4231,6 +4287,8 @@ end)()
         tapConns = {}, tapOn = false, tapDown = nil, tapPos = nil, tapTime = 0,
     }
 
+    local ZCOL = Color3.fromRGB(60, 220, 120)       -- warna tampilan zona (bisa dipilih di kartu Zona)
+
     -- ===== KARTU 1: ZONA =====
     local CardZone = NewCard(1, "🗺 ZONA")
     local StatusLbl = MakeLabel(NewRow(CardZone, 1, 44), "", UDim2.new(1, 0, 1, 0), nil, 9)
@@ -4244,39 +4302,63 @@ end)()
         KindBtns[d[1]] = MakeButton(RowKinds, d[2], BTN_GRAY, UDim2.new(0.24, 0, 1, 0), UDim2.new((i - 1) * 0.253, 0, 0, 0), 9)
     end
 
-    local RowDetect = NewRow(CardZone, 3, 24)
+    local function SectionHeader(order, text)
+        local r = NewRow(CardZone, order, 20)
+        r.BackgroundTransparency = 0
+        r.BackgroundColor3 = SLOT_HEADER
+        Corner(r, 5)
+        MakeLabel(r, text, UDim2.new(1, -8, 1, 0), UDim2.new(0, 6, 0, 0), 10)
+        return r
+    end
+    SectionHeader(3, "⚙ OTOMATIS — Deteksi Zona")
+    local RowDetect = NewRow(CardZone, 4, 24)
     local DetectBtn = MakeButton(RowDetect, "🔍 DETEKSI ZONA", BTN_TEAL, UDim2.new(0.49, 0, 1, 0))
     local TapBtn = MakeButton(RowDetect, "👆 KETUK PART", BTN_GRAY, UDim2.new(0.49, 0, 1, 0), UDim2.new(0.51, 0, 0, 0))
 
-    local RowPath = NewRow(CardZone, 4, 24)
+    local RowPath = NewRow(CardZone, 5, 24)
     local PathBox = MakeBox(RowPath, "Path Part zona (boleh Nama[*])", "", UDim2.new(0.64, 0, 1, 0))
     local PathAddBtn = MakeButton(RowPath, "+ PATH", BTN_BLUE, UDim2.new(0.34, 0, 1, 0), UDim2.new(0.66, 0, 0, 0))
 
-    local CandHead = NewRow(CardZone, 5, 14)
+    local CandHead = NewRow(CardZone, 6, 14)
     local CandLbl = MakeLabel(CandHead, "", UDim2.new(1, 0, 1, 0), nil, 9)
     CandHead.Visible = false
-    local CandHolder = NewList(CardZone, 6)
+    local CandHolder = NewList(CardZone, 7)
 
-    local RowAB = NewRow(CardZone, 7, 24)
+    SectionHeader(8, "✋ MANUAL — Pembuatan Zona")
+    local RowAB = NewRow(CardZone, 9, 24)
     local BtnA = MakeButton(RowAB, "Set Sudut A", BTN_ORANGE, UDim2.new(0.49, 0, 1, 0))
     local BtnB = MakeButton(RowAB, "Set Sudut B", BTN_ORANGE, UDim2.new(0.49, 0, 1, 0), UDim2.new(0.51, 0, 0, 0))
-    local RowH = NewRow(CardZone, 8, 22)
+    local RowH = NewRow(CardZone, 10, 22)
     MakeLabel(RowH, "Tinggi di atas sudut / Part pipih:", UDim2.new(0.55, 0, 1, 0), nil, 9)
     local HBox = MakeBox(RowH, "25", "25", UDim2.new(0.25, 0, 1, 0), UDim2.new(0.57, 0, 0, 0))
-    local RowC = NewRow(CardZone, 9, 24)
+    local RowC = NewRow(CardZone, 11, 24)
     local BtnC = MakeButton(RowC, "Set Titik Tengah", BTN_ORANGE, UDim2.new(0.46, 0, 1, 0))
     MakeLabel(RowC, "Radius:", UDim2.new(0.16, 0, 1, 0), UDim2.new(0.48, 0, 0, 0))
     local RBox = MakeBox(RowC, "40", "40", UDim2.new(0.32, 0, 1, 0), UDim2.new(0.66, 0, 0, 0))
-    local RowP = NewRow(CardZone, 10, 24)
+    local RowP = NewRow(CardZone, 12, 24)
     local BtnPAdd = MakeButton(RowP, "+ Titik Poligon (posisi sekarang)", BTN_ORANGE, UDim2.new(0.64, 0, 1, 0))
     local BtnPReset = MakeButton(RowP, "Reset", BTN_GRAY, UDim2.new(0.34, 0, 1, 0), UDim2.new(0.66, 0, 0, 0))
-    local RowShow = NewRow(CardZone, 11, 22)
+    local RowShow = NewRow(CardZone, 13, 22)
     local ShowToggle = ESP.MakeToggle(RowShow, "Tampilkan Zona", UDim2.new(0.6, 0, 1, 0), UDim2.new(0, 0, 0, 0), function(on)
         Z.show = on
         Z.updateVisual()
     end)
     ShowToggle.set(true)
     local BtnClear = MakeButton(RowShow, "Hapus Zona", BTN_RED, UDim2.new(0.38, 0, 1, 0), UDim2.new(0.62, 0, 0, 0))
+
+    -- Pemilihan warna zona (sama seperti ESP) + Rainbow Mode
+    local ZEntry = {color = ZCOL, rainbow = false, items = {}, f = {}}
+    local RowColor = NewRow(CardZone, 14, 22)
+    local ZPicker = ESP.MakeColorPicker(RowColor, UDim2.new(0, 0, 0, 0), ZEntry, nil, function(col)
+        ZCOL = col
+        Z.updateVisual()
+    end)
+    local RowRainbow = NewRow(CardZone, 15, 22)
+    ESP.MakeToggle(RowRainbow, "Rainbow Mode", UDim2.new(0.6, 0, 1, 0), UDim2.new(0, 0, 0, 0), function(on)
+        Z.rainbow = on
+        ZPicker.dim(on)
+        if on then Z.startRainbow() else Z.updateVisual() end     -- mati: kembali ke warna pilihan
+    end)
 
     -- ===== KARTU 2: ISI ZONA =====
     local CardScan = NewCard(2, "📦 ISI ZONA")
@@ -4346,7 +4428,6 @@ end)()
     -- ==================================================
     -- GEOMETRI ZONA
     -- ==================================================
-    local ZCOL = Color3.fromRGB(60, 220, 120)
 
     local function Flash(btn, text, restore)
         btn:SetAttribute("flash", (btn:GetAttribute("flash") or 0) + 1)
@@ -4517,6 +4598,7 @@ end)()
         s.Transparency = 0.1
         s.AlwaysOnTop = true
         s.ZIndex = 2
+        if color == ZCOL then s:SetAttribute("Tint", true) end
         s.Parent = folder
     end
 
@@ -4535,6 +4617,7 @@ end)()
         bar.Transparency = 0.02
         bar.AlwaysOnTop = true
         bar.ZIndex = 1
+        if color == ZCOL then bar:SetAttribute("Tint", true) end
         bar.Parent = folder
     end
 
@@ -4608,6 +4691,7 @@ end)()
                 h.OutlineColor = ZCOL
                 h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
                 h.Adornee = p
+                h:SetAttribute("Tint", true)
                 h.Parent = folder
             end
         elseif Z.kind == "box" and Defined("box") then
@@ -4620,6 +4704,7 @@ end)()
             box.Transparency = 0.82
             box.AlwaysOnTop = true
             box.ZIndex = 1
+            box:SetAttribute("Tint", true)
             box.Parent = folder
             AddWireBox(folder, base, cf, size, ZCOL, 0.5)     -- rangka kotak zona yang tegas
         elseif Z.kind == "sphere" and Defined("sphere") then
@@ -4631,6 +4716,7 @@ end)()
             s.Transparency = 0.88
             s.AlwaysOnTop = true
             s.ZIndex = 1
+            s:SetAttribute("Tint", true)
             s.Parent = folder
         end
 
@@ -4650,6 +4736,32 @@ end)()
         if Z.depositCF then AddSphere(folder, base, Z.depositCF.Position, 1.2, Color3.fromRGB(150, 80, 230)) end
     end
     Z.updateVisual = UpdateVisual
+
+    -- Rainbow Mode: bagian zona berwarna ZCOL berganti warna (penanda A/B/setor tetap). Satu thread ringan,
+    -- berhenti sendiri saat Rainbow dimatikan atau hub ditutup.
+    Z.startRainbow = function()
+        if Z.rainbowThread then return end
+        Z.rainbowThread = task.spawn(function()
+            while Z.rainbow and not hubDestroyed do
+                local col = Color3.fromHSV((os.clock() * 0.3) % 1, 1, 1)
+                local vis = Z.vis
+                if vis then
+                    for _, ch in ipairs(vis:GetChildren()) do
+                        if ch:GetAttribute("Tint") then
+                            if ch:IsA("Highlight") then
+                                ch.FillColor = col
+                                ch.OutlineColor = col
+                            else
+                                ch.Color3 = col
+                            end
+                        end
+                    end
+                end
+                task.wait(0.1)
+            end
+            Z.rainbowThread = nil
+        end)
+    end
 
     local function SetKind(kind)
         Z.kind = kind
