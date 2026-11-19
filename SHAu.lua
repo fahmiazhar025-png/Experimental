@@ -1233,6 +1233,203 @@ HomeHint.TextWrapped = true
 HomeHint.TextXAlignment = Enum.TextXAlignment.Left
 HomeHint.TextYAlignment = Enum.TextYAlignment.Top
 
+-- ========== HOME: BUNGKUS DALAM SCROLL + PANDUAN PENGGUNAAN ==========
+do
+    local function Corner(o, r)
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, r or 5)
+        c.Parent = o
+    end
+
+    local HomeScroll = Instance.new("ScrollingFrame")
+    HomeScroll.Parent = TabHomeContainer
+    HomeScroll.Size = UDim2.new(1, 0, 1, 0)
+    HomeScroll.BackgroundTransparency = 1
+    HomeScroll.ScrollBarThickness = 6
+    HomeScroll.ScrollBarImageColor3 = LINE
+    HomeScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    HomeScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    local HomeList = Instance.new("UIListLayout")
+    HomeList.Parent = HomeScroll
+    HomeList.Padding = UDim.new(0, 6)
+    HomeList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    HomeList.SortOrder = Enum.SortOrder.LayoutOrder
+
+    -- bagian atas (judul, status, tombol) dipindah ke sini; posisinya tetap seperti semula
+    local Top = Instance.new("Frame")
+    Top.Parent = HomeScroll
+    Top.Size = UDim2.new(1, -12, 0, 200)
+    Top.BackgroundTransparency = 1
+    Top.LayoutOrder = 1
+    for _, o in ipairs({HomeTitle, HomeStatus, HomeStopAllBtn, AntiAfkBtn, HomeHint}) do
+        o.Parent = Top
+    end
+
+    local GuideTitle = Instance.new("TextLabel")
+    GuideTitle.Parent = HomeScroll
+    GuideTitle.Size = UDim2.new(1, -12, 0, 20)
+    GuideTitle.BackgroundTransparency = 1
+    GuideTitle.LayoutOrder = 2
+    GuideTitle.Text = "📖 PANDUAN PENGGUNAAN  (ketuk judul untuk buka / tutup)"
+    GuideTitle.TextColor3 = TEXT_DARK
+    GuideTitle.Font = Enum.Font.GothamBold
+    GuideTitle.TextSize = 11
+    GuideTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+    local function Section(order, title, body, open)
+        local card = Instance.new("Frame")
+        card.Parent = HomeScroll
+        card.Size = UDim2.new(1, -12, 0, 0)
+        card.AutomaticSize = Enum.AutomaticSize.Y
+        card.BackgroundColor3 = HEADER_BG
+        card.LayoutOrder = order
+        Corner(card, 7)
+        local pad = Instance.new("UIPadding")
+        pad.PaddingTop = UDim.new(0, 5)
+        pad.PaddingBottom = UDim.new(0, 6)
+        pad.PaddingLeft = UDim.new(0, 5)
+        pad.PaddingRight = UDim.new(0, 5)
+        pad.Parent = card
+        local lay = Instance.new("UIListLayout")
+        lay.Padding = UDim.new(0, 5)
+        lay.SortOrder = Enum.SortOrder.LayoutOrder
+        lay.Parent = card
+
+        local head = Instance.new("TextButton")
+        head.Parent = card
+        head.Size = UDim2.new(1, 0, 0, 26)
+        head.LayoutOrder = 1
+        head.BackgroundColor3 = SLOT_HEADER
+        head.TextColor3 = TEXT_DARK
+        head.Font = Enum.Font.GothamBold
+        head.TextSize = 11
+        head.TextXAlignment = Enum.TextXAlignment.Left
+        head.AutoLocalize = false
+        head.AutoButtonColor = false
+        Corner(head, 5)
+        local hp = Instance.new("UIPadding")
+        hp.PaddingLeft = UDim.new(0, 8)
+        hp.Parent = head
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Parent = card
+        lbl.Size = UDim2.new(1, 0, 0, 0)
+        lbl.AutomaticSize = Enum.AutomaticSize.Y
+        lbl.LayoutOrder = 2
+        lbl.BackgroundTransparency = 1
+        lbl.RichText = true
+        lbl.TextWrapped = true
+        lbl.Text = body
+        lbl.TextColor3 = TEXT_DARK
+        lbl.Font = Enum.Font.Gotham
+        lbl.TextSize = 10
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.TextYAlignment = Enum.TextYAlignment.Top
+        lbl.Visible = open
+
+        local isOpen = open
+        local function Paint()
+            head.Text = (isOpen and "▾  " or "▸  ") .. title
+            lbl.Visible = isOpen
+        end
+        head.MouseButton1Click:Connect(function()
+            isOpen = not isOpen
+            Paint()
+        end)
+        Paint()
+    end
+
+    Section(3, "🚀 MULAI CEPAT", [=[<b>Menggerakkan hub</b>
+• Geser <b>kotak judul</b> untuk memindahkan hub. 🔓 = bebas digeser, 🔒 = posisi dikunci.
+• <b>−</b> menyembunyikan hub menjadi logo 🦐 (ketuk logo untuk membuka lagi; logo bisa digeser). Di PC: tekan <b>RightShift</b>.
+• <b>X</b> menutup hub dan menghentikan semua yang berjalan.
+
+<b>Tombol di Home</b>
+• <b>■ BERHENTI SEMUA</b> menghentikan Remote, Collect/Follow, Auto Farm Teleport, dan Auto Zona sekaligus.
+• <b>🛡 ANTI-AFK</b> mencegah dikeluarkan karena diam terlalu lama.
+
+<b>Aturan umum</b>
+• Saat Auto Collect, Auto Farm, atau Auto Zona <b>berhenti</b>, karakter otomatis kembali ke posisi awal + 2 stud ke atas (tidak berlaku saat hub ditutup dengan X).
+• Collect/Follow dan Auto Zona tidak jalan bersamaan: memulai salah satunya menghentikan yang lain agar tidak rebutan kendali karakter.
+• Di tiap slot: 🔒 mengunci isian, − mengecilkan, X menghapus, RESET mengosongkan.
+• Menjalankan skrip lagi otomatis membersihkan hub lama.]=], true)
+
+    Section(4, "🧭 FORMAT PATH (alamat objek)", [=[Path = alamat objek di game, dipisah titik, dimulai dari service. Contoh: <b>Workspace.Lobby.Decor.Palm</b>
+
+• Nama ganda: <b>Palm[2]</b> = anak ke-2 yang bernama Palm.
+• Semua yang serupa: <b>Palm[*]</b> = SEMUA anak bernama Palm. Contoh: <b>Workspace.Lobby.Decor.Palm[*].Trunk[*]</b>
+• Titik di dalam nama ditulis <b>\.</b>
+
+<b>Cara termudah:</b> Tab Auto Collect → nyalakan <b>Select Object</b> → ketuk objek di game → <b>COPY PATH</b> → tempel di kolom path mana pun. Panel akan menulis Validasi ✅ bila path cocok dengan objeknya.]=], false)
+
+    Section(5, "🦐 TAB AUTO REMOTE", [=[Mengulang aksi game (remote) secara otomatis.
+
+<b>Langkah</b>
+1. Tekan <b>📌 SIMPLE SPY</b> atau <b>🔷 COBALT SPY</b> untuk memuat alat pengintai remote.
+2. Lakukan aksi di game (mis. ambil atau klik sesuatu), lalu salin kode remote yang muncul di Spy.
+3. Tempel ke kolom kode di sebuah slot. <b>D</b> = jeda antar ulangan (detik).
+4. <b>MULAI</b> menjalankan berulang (tombol menjadi ● JALAN), <b>BERHENTI</b> menghentikan, <b>RESET</b> mengosongkan slot.
+
+<b>Lainnya</b>
+• <b>+ TAMBAH SLOT REMOTE</b> (biru, di bawah slot terakhir) menambah slot baru.
+• Baris atas: isi <b>Delay</b>, lalu <b>MULAI SEMUA</b> / <b>BERHENTI SEMUA</b> menjalankan semua slot yang tidak terkunci dengan delay itu.
+• Kode yang salah akan menghentikan slot itu; pesannya tampil di konsol (F9).]=], false)
+
+    Section(6, "📦 TAB AUTO COLLECT", [=[<b>Kartu di atas</b>
+• <b>🔎 DEX++</b>: membuka penjelajah objek game (butuh executor).
+• <b>Select Object</b>: nyalakan, lalu <b>ketuk objek di game</b>. Path, nama, class, posisi, dan isinya tampil; objek dilingkari kotak biru. <b>Semua Serupa</b> (bawaan ON) menjadikan objek serupa 1 path memakai [*]. <b>COPY PATH</b> menyalin; <b>↑ INDUK</b> naik ke induknya (mis. dari Part ke Model).
+• <b>ESP Objek</b>: isi path, lalu nyalakan <b>Tracer</b> (garis), <b>Highlight</b>, <b>Nama ESP</b> (nama + jarak), <b>Box ESP</b> (rangka kubus). Pilih <b>Warna</b> atau <b>Rainbow Mode</b>.
+
+<b>Slot</b> (+ TAMBAH SLOT di paling bawah)
+• Tombol <b>mode</b> di header (Collect / Follow) mengganti mode. Bila ada isian, muncul <b>Sure? [5]</b>: tekan lagi dalam 5 detik untuk konfirmasi (isi slot di-reset). Nama slot ikut berganti.
+• <b>★ prioritas</b>: slot berbintang dijalankan lebih dulu; sisanya bergiliran menurut siapa yang dimulai duluan.
+• Toggle <b>Nama Objek sesuai Nama Slot</b>: Nama ESP memakai nama slot.
+
+<b>Mode COLLECT</b> (mendekati / mengumpulkan objek)
+• Isi <b>Path Objek</b>. <b>TP</b> = teleport langsung, <b>TW</b> = jalan (tween) + noclip.
+• <b>D</b> = jeda antar giliran. <b>&lt;Y</b> = lewati objek yang posisinya di bawah nilai Y itu.
+• Path yang mencakup banyak objek ([*]): dikunjungi dari yang terdekat sampai semua.
+• <b>📡 PINDAI LOKASI</b> mencetak dan menyalin koordinatmu.
+
+<b>Mode FOLLOW</b> (mengikuti objek terus-menerus)
+• Pilih arah karakter terhadap objek (Atas/Bawah, Kiri/Kanan, Depan/Belakang; boleh digabung antar pasangan) dan <b>Distance</b> dalam stud.
+• Bagian-bagian objek otomatis dijadikan satu kesatuan, mis. <b>Workspace.Enemies.Bandit[*].UpperTorso</b> → seluruh Bandit. Musuh yang mati dianggap hilang.
+• Objek hilang → langsung pindah ke objek serupa terdekat; tidak ada lagi → kembali ke posisi semula.]=], false)
+
+    Section(7, "📍 TAB AUTO TELEPORT", [=[<b>Posisi &amp; Teleport</b>: <b>SALIN POSISI</b> menyalin koordinatmu ke kotak. Isi X, Y, Z lalu <b>TELEPORT</b> (atau JALAN KE SINI).
+
+<b>Cara Perpindahan (Global)</b>: <b>Set All Teleport</b> / <b>Set All Jalan + Noclip</b> mengubah semua titik sekaligus. Kec (kecepatan) dan Tinggi (lintasan) muncul bila ada yang Jalan + Noclip. <b>⏹ BERHENTI</b> menghentikan perjalanan / Auto Farm.
+
+<b>Box Mark</b>: menandai titik tersimpan dengan kotak ungu setinggi karakter. <b>Pos Name</b> = nama + jarak di atas kotak; <b>Tembus Tembok</b> = terlihat dari balik tembok.
+
+<b>Titik Tersimpan</b>: <b>➕ SIMPAN POSISI SEKARANG</b> membuat titik. Tiap titik punya mode <b>TP / Jalan + Noclip</b>, Delay, serta Kec/Tinggi sendiri; <b>GO</b> untuk pergi, <b>X</b> untuk hapus. <b>HAPUS SEMUA</b> meminta konfirmasi 5 detik.
+
+<b>Auto Farm Berantai</b>
+1. <b>PILIH URUTAN TITIK</b>, lalu ketuk tombol + pada titik sesuai urutan (angka muncul).
+2. Atur Delay dan Set All untuk titik terpilih (kolom kosong / «beda» = nilainya berbeda antar titik).
+3. <b>▶ MULAI AUTO FARM</b> mengulang titik-titik itu berurutan. Berhenti → kembali ke posisi awal + 2 stud.]=], false)
+
+    Section(8, "🗺 TAB AUTO ZONE", [=[Untuk area (zona) tempat barang muncul acak. Alur: zona → scan → pengambilan &amp; setor → jalan.
+
+<b>1. Tentukan zona</b> (tombol PART / KOTAK / BOLA / POLIGON memilih zona tersimpan yang aktif)
+• <b>⚙ OTOMATIS</b>: <b>🔍 DETEKSI ZONA</b> mencari Part zona yang menaungi posisimu (berdirilah di dalam zona) lalu kamu pilih dari daftar. <b>👆 KETUK PART</b> = ketuk Part zona di game. <b>+ PATH</b> = tempel path Part zona (boleh Nama[*]).
+• <b>✋ MANUAL</b>: <b>Set Sudut A</b> + <b>Set Sudut B</b> (berdiri di tiap sudut) = kotak. <b>Set Titik Tengah</b> + Radius = bola. <b>+ Titik Poligon</b> di tiap sudut (min. 3) = bentuk bebas. <b>Tinggi di atas sudut</b> = seberapa tinggi zona dihitung.
+• <b>Tampilkan Zona</b> menggambarnya (A oranye, B biru); pilih warna atau Rainbow. <b>Hapus Zona</b> mengosongkan.
+
+<b>2. Isi Zona</b>: <b>🔄 SCAN</b> (atau Auto Scan) menghitung isi per jenis, mis. Box ×19, Chest ×11. Centang jenis yang mau diambil. Objek lebih besar dari batas stud diabaikan agar peta / dekorasi tidak ikut.
+
+<b>3. Pengambilan &amp; Setor</b>: pilih <b>Cara ambil</b> (Auto, Dekati saja, Tekan E, Tahan E, Prompt, Sentuh, Klik). <b>📍 SET TITIK SETOR</b> = posisi tempat membawa barang kembali; <b>Setor tiap N barang</b>. <b>Tunggu konfirmasi</b> dan <b>Maks percobaan</b>: barang dicek dulu sudah hilang / terangkat sebelum karakter kembali.
+
+<b>4. ▶ MULAI AUTO ZONA</b>: teleport ke barang terdekat → ambil → cek → setor → barang berikutnya. Bila zona kosong, karakter menunggu di zona agar barang muncul. Berhenti → kembali ke posisi awal + 2 stud.]=], false)
+
+    Section(9, "🛠 TIPS & MASALAH UMUM", [=[• Tidak terjadi apa-apa? Pastikan karakter hidup, slot tidak 🔒, dan path benar (cek lewat Select Object → Validasi ✅).
+• Beberapa fitur memakai fungsi executor: Dex++ &amp; Spy (loadstring / HttpGet), Copy Path (setclipboard), Prompt / Klik / Sentuh (fireproximityprompt / fireclickdetector / firetouchinterest). Tanpa itu fitur terkait tidak berfungsi, fitur lain tetap aman.
+• Tekan / Tahan E mengirim input tombol sungguhan: jendela game harus aktif dan prompt sedang terlihat.
+• Setelah respawn: Follow dan Auto Farm melanjutkan dengan karakter baru; Collect menunggu karakter muncul.
+• Jika game memakai StreamingEnabled, hanya objek yang sudah termuat di dekatmu yang tampil / terhitung.
+• Pesan status dan error ada di konsol (tekan F9 atau ketik /console).]=], false)
+end
+
 -- ========== KONTEN TAB REMOTE ==========
 local TabRemoteContainer = Instance.new("Frame")
 TabRemoteContainer.Parent = TabContentWrapper
