@@ -82,6 +82,330 @@ local function Track(conn)
     return conn
 end
 
+-- ========== BAHASA / LANGUAGE ==========
+-- Seluruh teks antarmuka ditulis dalam bahasa Indonesia di kode. Saat bahasa = "en", setiap teks (label, tombol,
+-- placeholder) diterjemahkan otomatis tiap kali teksnya berubah, dan dikembalikan saat bahasa diganti lagi.
+-- Hemat memori: hanya aktif setelah Inggris dipilih; satu koneksi per teks yang ikut hilang bersama objeknya.
+local Loc = {
+    lang = (env and env.ShrimpHubLang) or "id",
+    rec = setmetatable({}, {__mode = "k"}),   -- teks -> catatan sumber (kunci lemah)
+    listeners = {},                            -- fungsi yang dipanggil saat bahasa berganti (panduan Home, dll.)
+    root = nil, attached = false,
+}
+
+-- Cocok persis dengan seluruh teks (untuk teks sangat pendek yang berbahaya bila diganti sebagian)
+Loc.EXACT = {
+    ["K"] = "L",     -- Kunci -> Locked
+    ["B"] = "F",     -- Bebas -> Free
+}
+
+-- Frasa (dicocokkan sebagian, hanya di batas kata). Urutan tidak penting: otomatis dari yang terpanjang.
+Loc.PHR = {
+    -- Home & umum
+    {"Selamat datang di Shrimp Hub", "Welcome to Shrimp Hub"},
+    {"BERHENTI SEMUA", "STOP ALL"},
+    {"ANTI\u{2011}AFK", "ANTI-AFK"},
+    {"Tekan RightShift untuk sembunyikan / tampilkan hub (PC)", "Press RightShift to hide / show the hub (PC)"},
+    {"di slot Collect = prioritas (jalan duluan)", "on a Collect slot = priority (runs first)"},
+    {"Slot Remote: ", "Remote slots: "},
+    {"Slot Collect: ", "Collect slots: "},
+    {"Antrean Collect: ", "Collect queue: "},
+    {"Titik Teleport: ", "Teleport points: "},
+    {"(aktif: ", "(active: "},
+    {"AKTIF", "ACTIVE"},
+    {"mati", "off"},
+    {"Bahasa", "Language"},
+    -- Remote
+    {"MULAI SEMUA", "START ALL"},
+    {"+ TAMBAH SLOT REMOTE", "+ ADD REMOTE SLOT"},
+    {"+ SLOT REMOTE", "+ REMOTE SLOT"},
+    {"+ TAMBAH SLOT COLLECT", "+ ADD COLLECT SLOT"},
+    {"Tempel kode remote di sini (dari Simple Spy / Cobalt)", "Paste remote code here (from Simple Spy / Cobalt)"},
+    {"JALAN", "RUNNING"},
+    {"MULAI", "START"},
+    {"BERHENTI", "STOP"},
+    -- Dex++ / Select Object
+    {"Memuat Dex++...", "Loading Dex++..."},
+    {"Dex++ dimuat", "Dex++ loaded"},
+    {"Gagal memuat (cek URL / executor)", "Failed to load (check URL / executor)"},
+    {"Aktifkan Select Object, lalu ketuk objek di game.", "Turn on Select Object, then tap an object in the game."},
+    {"Objek sudah tidak ada di game.", "The object no longer exists in the game."},
+    {", dilingkari ", ", outlined "},
+    {" pertama", " first"},
+    {"Serupa: path ini mencakup ", "Similar: this path covers "},
+    {"([*] = semua yang bernama itu)", "([*] = everything with that name)"},
+    {"Nama: ", "Name: "},
+    {"Ukuran: ", "Size: "},
+    {"Induk: ", "Parent: "},
+    {"Isi: (kosong)", "Contents: (empty)"},
+    {"Isi (", "Contents ("},
+    {" lagi", " more"},
+    {"Validasi: path cocok dan mencakup objek ini", "Validation: path matches and includes this object"},
+    {"Validasi: path tidak mencakup objek ini", "Validation: path does not include this object"},
+    {"Tidak ada objek di titik itu (langit / terlalu jauh).", "No object at that point (sky / too far)."},
+    {"Mode pilih aktif: ketuk sebuah objek di game.", "Select mode on: tap an object in the game."},
+    {"(Menggeser layar untuk kamera tidak memilih apa pun.)", "(Dragging the screen to move the camera selects nothing.)"},
+    {"Semua Serupa", "All Similar"},
+    {"INDUK", "PARENT"},
+    {"Pilih objek dulu", "Select an object first"},
+    {"TERSALIN", "COPIED"},
+    {"Tanpa clipboard (path di konsol)", "No clipboard (path in console)"},
+    {"Teratas", "Top"},
+    {" objek", " objects"},
+    -- ESP & slot
+    {"ESP Objek", "Object ESP"},
+    {"Path Objek: Workspace.Benda", "Object Path: Workspace.Item"},
+    {"Nama ESP", "Name ESP"},
+    {"Warna:", "Color:"},
+    {"Batas Y", "Y limit"},
+    {"PINDAI LOKASI (Cetak X Y Z ke Konsol)", "SCAN LOCATION (print X Y Z to console)"},
+    {"Karakter tidak ditemukan (tap untuk coba lagi)", "Character not found (tap to retry)"},
+    {"Arah Karakter kepada Objek:", "Character direction toward the object:"},
+    {"Nama Objek sesuai Nama Slot", "Object Name follows Slot Name"},
+    {"Atas", "Up"},
+    {"Bawah", "Down"},
+    {"Kiri", "Left"},
+    {"Kanan", "Right"},
+    {"Depan", "Front"},
+    {"Belakang", "Back"},
+    -- Teleport
+    {"Delay semua:", "All delay:"},
+    {"Set All Jalan + Noclip", "Set All Walk + Noclip"},
+    {"Jalan + Noclip", "Walk + Noclip"},
+    {"Kec:", "Spd:"},
+    {"Tinggi:", "Height:"},
+    {"Semua slot: ", "All slots: "},
+    {"Campur: ", "Mixed: "},
+    {"POSISI & TELEPORT", "POSITION & TELEPORT"},
+    {"SALIN POSISI SEKARANG", "COPY CURRENT POSITION"},
+    {"X, Y, Z (pisah koma)", "X, Y, Z (comma separated)"},
+    {"JALAN KE SINI", "WALK HERE"},
+    {"CARA PERPINDAHAN (GLOBAL)", "MOVEMENT MODE (GLOBAL)"},
+    {"Belum ada slot tersimpan", "No saved slots yet"},
+    {"BOX MARK (TANDA TITIK)", "BOX MARK (POINT MARKER)"},
+    {"Tembus Tembok", "See Through Walls"},
+    {"TITIK TERSIMPAN", "SAVED POINTS"},
+    {"SIMPAN POSISI SEKARANG", "SAVE CURRENT POSITION"},
+    {"HAPUS SEMUA TITIK", "DELETE ALL POINTS"},
+    {"AUTO FARM BERANTAI", "CHAINED AUTO FARM"},
+    {"PILIH URUTAN TITIK", "PICK POINT ORDER"},
+    {"Belum ada slot dipilih", "No slot selected yet"},
+    {"Pilih titik dulu (Pilih Urutan Titik)", "Pick points first (Pick Point Order)"},
+    {"MULAI AUTO FARM", "START AUTO FARM"},
+    {"HENTIKAN AUTO FARM", "STOP AUTO FARM"},
+    {"Nama slot", "Slot name"},
+    {"PILIH TITIK DULU", "PICK POINTS FIRST"},
+    {"KONFIRMASI HAPUS", "CONFIRM DELETE"},
+    {"SELESAI MEMILIH", "DONE PICKING"},
+    {"beda", "mixed"},
+    -- Zone
+    {"ZONA", "ZONE"},
+    {"KOTAK dari 2 sudut", "BOX from 2 corners"},
+    {"KOTAK", "BOX"},
+    {"BOLA radius ", "SPHERE radius "},
+    {"BOLA", "SPHERE"},
+    {"POLIGON", "POLYGON"},
+    {"Zona aktif: ", "Active zone: "},
+    {"OTOMATIS", "AUTOMATIC"},
+    {"Deteksi Zona", "Zone Detection"},
+    {"DETEKSI ZONA", "DETECT ZONE"},
+    {"KETUK PART", "TAP PART"},
+    {"Path Part zona (boleh Nama[*])", "Zone part path (Name[*] allowed)"},
+    {"MANUAL", "MANUAL"},
+    {"Pembuatan Zona", "Zone Creation"},
+    {"Set Sudut A", "Set Corner A"},
+    {"Set Sudut B", "Set Corner B"},
+    {"Tinggi di atas sudut / Part pipih:", "Height above corners / flat parts:"},
+    {"Set Titik Tengah", "Set Center Point"},
+    {"+ Titik Poligon (posisi sekarang)", "+ Polygon Point (current position)"},
+    {"Tampilkan Zona", "Show Zone"},
+    {"Hapus Zona", "Clear Zone"},
+    {"ISI ZONA", "ZONE CONTENTS"},
+    {"Auto Scan (0,5 dtk)", "Auto Scan (0.5 s)"},
+    {"Abaikan objek lebih besar dari (stud):", "Ignore objects larger than (studs):"},
+    {"Atur zona dulu, lalu tekan SCAN.", "Set up a zone first, then press SCAN."},
+    {"PENGAMBILAN & SETOR", "PICKUP & DEPOSIT"},
+    {"Auto (deteksi per barang)", "Auto (detect per item)"},
+    {"Dekati saja", "Approach only"},
+    {"Tekan E (sekali)", "Press E (once)"},
+    {"Tahan E", "Hold E"},
+    {"Prompt (otomatis)", "Prompt (automatic)"},
+    {"Sentuh", "Touch"},
+    {"Klik", "Click"},
+    {"Cara ambil (pilih satu):", "Pickup method (choose one):"},
+    {"Jeda setelah ambil (dtk):", "Delay after pickup (s):"},
+    {"Lama Tahan E (dtk, 0 = ikuti prompt):", "Hold E duration (s, 0 = follow prompt):"},
+    {"SET TITIK SETOR (posisi sekarang)", "SET DEPOSIT POINT (current position)"},
+    {"Hapus", "Delete"},
+    {"Titik setor: belum diatur (barang tidak disetor)", "Deposit point: not set (items are not deposited)"},
+    {"Titik setor: ", "Deposit point: "},
+    {"Setor tiap (barang):", "Deposit every (items):"},
+    {"Jeda di titik setor (dtk):", "Wait at deposit point (s):"},
+    {"Tunggu konfirmasi (dtk):", "Confirmation wait (s):"},
+    {"Maks percobaan per item:", "Max attempts per item:"},
+    {"MULAI AUTO ZONA", "START AUTO ZONE"},
+    {"AUTO ZONA", "AUTO ZONE"},
+    {"Status: berhenti", "Status: stopped"},
+    {"menunggu karakter...", "waiting for character..."},
+    {"zona belum diatur", "zone not set"},
+    {"menunggu barang muncul di zona...", "waiting for items to appear in the zone..."},
+    {"mengambil ", "picking "},
+    {" target tersisa)", " targets left)"},
+    {"memeriksa ", "checking "},
+    {" (percobaan ", " (attempt "},
+    {" belum bisa diambil, pindah ke item lain", " could not be picked, moving to another item"},
+    {"menyetor ke titik setor...", "depositing at the deposit point..."},
+    {"Atur zona dulu", "Set up a zone first"},
+    {"Scan lalu centang jenis barang", "Scan, then tick the item types"},
+    {"belum diatur", "not set"},
+    {"isi path", "enter a path"},
+    {"tidak ketemu", "not found"},
+    {"Tengah OK", "Center OK"},
+    {"Terambil: ", "Picked: "},
+    {"Gagal: ", "Failed: "},
+    {"Disetor: ", "Deposited: "},
+    {" titik (bentuk bebas)", " points (free shape)"},
+    {" titik (minimal 3).", " points (minimum 3)."},
+    {"Poligon: ", "Polygon: "},
+    {" bagian (bentuk mengikuti Part aslinya)", " parts (shape follows the original Part)"},
+    {"Belum ada zona. Pakai Deteksi Zona, Ketuk Part, Path, 2 sudut, titik tengah, atau Poligon.", "No zone yet. Use Detect Zone, Tap Part, Path, 2 corners, center point, or Polygon."},
+    {"Tidak ada Part terdeteksi. Dekati zona, atau pakai Ketuk Part / Path.", "No Part detected. Get closer to the zone, or use Tap Part / Path."},
+    {"Kandidat zona - pilih satu atau beberapa Part:", "Zone candidates - pick one or more Parts:"},
+    {"[di dalam]", "[inside]"},
+    {"tembus", "pass-through"},
+    {"Karakter tidak ada", "No character"},
+    {"mencari...", "searching..."},
+    {"Tidak kena Part", "No Part hit"},
+    {" objek \u{2022} ", " objects \u{2022} "},
+    {" jenis lain tidak ditampilkan", " other types not shown"},
+    {" jenis", " types"},
+    {"NPC dilewati: ", "NPCs skipped: "},
+    {"(centang jenis di bawah)", "(tick the types below)"},
+    {" stud", " studs"},
+    {"berhenti", "stopped"},
+    -- pesan konsol
+    {"Isi path objek terlebih dahulu", "Enter the object path first"},
+    {"Karakter tidak ditemukan / respawn, menunggu", "Character not found / respawning, waiting"},
+    {"Karakter tidak ditemukan", "Character not found"},
+    {"Target path tidak ditemukan", "Target path not found"},
+    {"Tidak ada target valid (posisi tak terbaca / di bawah batas Y)", "No valid target (position unreadable / below the Y limit)"},
+    {"Error Runtime: ", "Runtime error: "},
+    {"Tempel kode remote terlebih dahulu", "Paste the remote code first"},
+    {"Kode tidak valid: ", "Invalid code: "},
+    {"Pindai Lokasi Slot ", "Scan Position Slot "},
+}
+table.sort(Loc.PHR, function(a, b) return #a[1] > #b[1] end)
+
+-- Ganti kemunculan k oleh v hanya di batas kata (agar "atas" di dalam "Batas" tidak ikut berubah)
+Loc.replace = function(text, k, v)
+    local firstAlnum = k:sub(1, 1):match("%w") ~= nil
+    local lastAlnum = k:sub(-1):match("%w") ~= nil
+    local pieces, pos = {}, 1
+    while true do
+        local a, b = text:find(k, pos, true)
+        if not a then break end
+        local okL = (not firstAlnum) or a == 1 or not text:sub(a - 1, a - 1):match("%w")
+        local okR = (not lastAlnum) or b == #text or not text:sub(b + 1, b + 1):match("%w")
+        if okL and okR then
+            pieces[#pieces + 1] = text:sub(pos, a - 1)
+            pieces[#pieces + 1] = v
+            pos = b + 1
+        else
+            pieces[#pieces + 1] = text:sub(pos, a)
+            pos = a + 1
+        end
+    end
+    pieces[#pieces + 1] = text:sub(pos)
+    return table.concat(pieces)
+end
+
+Loc.tr = function(s)
+    if Loc.lang ~= "en" or s == nil or s == "" then return s end
+    local ex = Loc.EXACT[s]
+    if ex then return ex end
+    local out = s
+    for _, e in ipairs(Loc.PHR) do
+        if out:find(e[1], 1, true) then
+            out = Loc.replace(out, e[1], e[2])
+        end
+    end
+    return out
+end
+
+-- Tulis ulang satu teks sesuai bahasa saat ini (sumber tetap bahasa Indonesia)
+Loc.paint = function(inst, rec)
+    if rec.text ~= nil then
+        local out = Loc.tr(rec.text)
+        rec.shown = out
+        if inst.Text ~= out then inst.Text = out end
+    end
+    if rec.ph ~= nil then
+        local out = Loc.tr(rec.ph)
+        rec.shownPh = out
+        if inst.PlaceholderText ~= out then inst.PlaceholderText = out end
+    end
+end
+
+Loc.track = function(inst)
+    if Loc.rec[inst] then return end
+    local isBox = inst:IsA("TextBox")
+    if not (isBox or inst:IsA("TextLabel") or inst:IsA("TextButton")) then return end
+    if inst:GetAttribute("NoLoc") then return end
+    local rec = {text = (not isBox) and inst.Text or nil, ph = isBox and inst.PlaceholderText or nil}
+    Loc.rec[inst] = rec
+    if not isBox then
+        inst:GetPropertyChangedSignal("Text"):Connect(function()
+            local cur = inst.Text
+            if cur == rec.shown then return end          -- tulisan kita sendiri
+            rec.text = cur                               -- kode menulis teks baru: itu sumber baru
+            local out = Loc.tr(cur)
+            rec.shown = out
+            if out ~= cur then inst.Text = out end
+        end)
+    else
+        inst:GetPropertyChangedSignal("PlaceholderText"):Connect(function()
+            local cur = inst.PlaceholderText
+            if cur == rec.shownPh then return end
+            rec.ph = cur
+            local out = Loc.tr(cur)
+            rec.shownPh = out
+            if out ~= cur then inst.PlaceholderText = out end
+        end)
+    end
+    Loc.paint(inst, rec)
+end
+
+-- Mulai memantau seluruh teks di bawah root (sekali saja; baru dipanggil saat Inggris pertama dipilih)
+Loc.attach = function()
+    if Loc.attached or not Loc.root then return end
+    Loc.attached = true
+    for _, d in ipairs(Loc.root:GetDescendants()) do Loc.track(d) end
+    Track(Loc.root.DescendantAdded:Connect(Loc.track))
+end
+
+Loc.set = function(lang)
+    Loc.lang = lang
+    if env then env.ShrimpHubLang = lang end
+    if lang == "en" then Loc.attach() end
+    if Loc.attached then
+        for inst, rec in pairs(Loc.rec) do
+            if inst.Parent then Loc.paint(inst, rec) end
+        end
+    end
+    for _, fn in ipairs(Loc.listeners) do pcall(fn) end
+end
+
+-- Pesan konsol (F9) ikut mengikuti bahasa yang dipilih
+local rawPrint = print
+local print = function(...)
+    local n = select("#", ...)
+    local args = {...}
+    for i = 1, n do
+        if type(args[i]) == "string" then args[i] = Loc.tr(args[i]) end
+    end
+    return rawPrint(table.unpack(args, 1, n))
+end
+
 -- ========== FUNGSI PENDUKUNG ==========
 local function GetHumanoidRootPart()
     local char = LocalPlayer.Character
@@ -1087,7 +1411,7 @@ do
         c.Parent = b
         return b
     end
-    HubLockBtn = HeaderBtn("🔓", Color3.fromRGB(40, 180, 80), -92, Enum.Font.GothamBold, 13)
+    HubLockBtn = HeaderBtn("B", Color3.fromRGB(40, 180, 80), -92, Enum.Font.GothamBold, 13)
     HubMinBtn = HeaderBtn("-", Color3.fromRGB(230, 150, 40), -61, Enum.Font.GothamBlack, 15)
     DestBtn = HeaderBtn("X", Color3.fromRGB(214, 70, 70), -30, Enum.Font.GothamBlack, 13)
 end
@@ -1199,7 +1523,7 @@ HomeStopAllBtn.Parent = TabHomeContainer
 HomeStopAllBtn.Size = UDim2.new(0.48, 0, 0, 34)
 HomeStopAllBtn.Position = UDim2.new(0, 0, 0, 122)
 HomeStopAllBtn.BackgroundColor3 = BTN_RED
-HomeStopAllBtn.Text = "■ BERHENTI SEMUA"
+HomeStopAllBtn.Text = "BERHENTI SEMUA"
 HomeStopAllBtn.TextColor3 = Color3.new(1, 1, 1)
 HomeStopAllBtn.Font = Enum.Font.GothamBold
 HomeStopAllBtn.TextSize = 10
@@ -1212,7 +1536,7 @@ AntiAfkBtn.Parent = TabHomeContainer
 AntiAfkBtn.Size = UDim2.new(0.48, 0, 0, 34)
 AntiAfkBtn.Position = UDim2.new(0.52, 0, 0, 122)
 AntiAfkBtn.BackgroundColor3 = UNLOCK_COLOR
-AntiAfkBtn.Text = "🛡 ANTI‑AFK: OFF"
+AntiAfkBtn.Text = "ANTI‑AFK: OFF"
 AntiAfkBtn.TextColor3 = Color3.new(1, 1, 1)
 AntiAfkBtn.Font = Enum.Font.GothamBold
 AntiAfkBtn.TextSize = 10
@@ -1233,8 +1557,10 @@ HomeHint.TextWrapped = true
 HomeHint.TextXAlignment = Enum.TextXAlignment.Left
 HomeHint.TextYAlignment = Enum.TextYAlignment.Top
 
--- ========== HOME: BUNGKUS DALAM SCROLL + PANDUAN PENGGUNAAN ==========
+-- ========== HOME: PANDUAN PENGGUNAAN + PILIHAN BAHASA ==========
 do
+    Loc.root = ScreenGui
+
     local function Corner(o, r)
         local c = Instance.new("UICorner")
         c.CornerRadius = UDim.new(0, r or 5)
@@ -1258,25 +1584,68 @@ do
     -- bagian atas (judul, status, tombol) dipindah ke sini; posisinya tetap seperti semula
     local Top = Instance.new("Frame")
     Top.Parent = HomeScroll
-    Top.Size = UDim2.new(1, -12, 0, 200)
+    Top.Size = UDim2.new(1, -12, 0, 236)
     Top.BackgroundTransparency = 1
     Top.LayoutOrder = 1
     for _, o in ipairs({HomeTitle, HomeStatus, HomeStopAllBtn, AntiAfkBtn, HomeHint}) do
         o.Parent = Top
     end
 
+    -- Pilihan bahasa
+    local LangLbl = Instance.new("TextLabel")
+    LangLbl:SetAttribute("NoLoc", true)
+    LangLbl.Parent = Top
+    LangLbl.Size = UDim2.new(0.4, 0, 0, 26)
+    LangLbl.Position = UDim2.new(0, 0, 0, 204)
+    LangLbl.BackgroundTransparency = 1
+    LangLbl.Text = "Language / Bahasa:"
+    LangLbl.TextColor3 = TEXT_DARK
+    LangLbl.Font = Enum.Font.GothamBold
+    LangLbl.TextSize = 10
+    LangLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local function LangBtn(text, x)
+        local b = Instance.new("TextButton")
+        b:SetAttribute("NoLoc", true)
+        b.Parent = Top
+        b.Size = UDim2.new(0.28, 0, 0, 26)
+        b.Position = UDim2.new(x, 0, 0, 204)
+        b.Text = text
+        b.TextColor3 = Color3.new(1, 1, 1)
+        b.Font = Enum.Font.GothamBold
+        b.TextSize = 10
+        b.AutoLocalize = false
+        b.AutoButtonColor = false
+        Corner(b, 6)
+        return b
+    end
+    local BtnId = LangBtn("Indonesia", 0.42)
+    local BtnEn = LangBtn("English", 0.72)
+    local function PaintLangButtons()
+        BtnId.BackgroundColor3 = (Loc.lang == "id") and BTN_BLUE or BTN_GRAY
+        BtnEn.BackgroundColor3 = (Loc.lang == "en") and BTN_BLUE or BTN_GRAY
+    end
+    BtnId.MouseButton1Click:Connect(function() Loc.set("id") end)
+    BtnEn.MouseButton1Click:Connect(function() Loc.set("en") end)
+    table.insert(Loc.listeners, PaintLangButtons)
+    PaintLangButtons()
+
     local GuideTitle = Instance.new("TextLabel")
+    GuideTitle:SetAttribute("NoLoc", true)
     GuideTitle.Parent = HomeScroll
     GuideTitle.Size = UDim2.new(1, -12, 0, 20)
     GuideTitle.BackgroundTransparency = 1
     GuideTitle.LayoutOrder = 2
-    GuideTitle.Text = "📖 PANDUAN PENGGUNAAN  (ketuk judul untuk buka / tutup)"
     GuideTitle.TextColor3 = TEXT_DARK
     GuideTitle.Font = Enum.Font.GothamBold
     GuideTitle.TextSize = 11
     GuideTitle.TextXAlignment = Enum.TextXAlignment.Left
+    table.insert(Loc.listeners, function()
+        GuideTitle.Text = (Loc.lang == "en") and "USER GUIDE  (tap a title to open / close)" or "PANDUAN PENGGUNAAN  (ketuk judul untuk buka / tutup)"
+    end)
 
-    local function Section(order, title, body, open)
+    -- Satu bagian panduan: judul + isi dalam dua bahasa; isi dapat dibuka / ditutup
+    local function Section(order, titleId, titleEn, bodyId, bodyEn, open)
         local card = Instance.new("Frame")
         card.Parent = HomeScroll
         card.Size = UDim2.new(1, -12, 0, 0)
@@ -1296,6 +1665,7 @@ do
         lay.Parent = card
 
         local head = Instance.new("TextButton")
+        head:SetAttribute("NoLoc", true)
         head.Parent = card
         head.Size = UDim2.new(1, 0, 0, 26)
         head.LayoutOrder = 1
@@ -1312,6 +1682,7 @@ do
         hp.Parent = head
 
         local lbl = Instance.new("TextLabel")
+        lbl:SetAttribute("NoLoc", true)
         lbl.Parent = card
         lbl.Size = UDim2.new(1, 0, 0, 0)
         lbl.AutomaticSize = Enum.AutomaticSize.Y
@@ -1319,115 +1690,194 @@ do
         lbl.BackgroundTransparency = 1
         lbl.RichText = true
         lbl.TextWrapped = true
-        lbl.Text = body
         lbl.TextColor3 = TEXT_DARK
         lbl.Font = Enum.Font.Gotham
         lbl.TextSize = 10
         lbl.TextXAlignment = Enum.TextXAlignment.Left
         lbl.TextYAlignment = Enum.TextYAlignment.Top
-        lbl.Visible = open
 
         local isOpen = open
         local function Paint()
-            head.Text = (isOpen and "▾  " or "▸  ") .. title
+            local en = Loc.lang == "en"
+            head.Text = (isOpen and "-  " or "+  ") .. (en and titleEn or titleId)
+            lbl.Text = en and bodyEn or bodyId
             lbl.Visible = isOpen
         end
         head.MouseButton1Click:Connect(function()
             isOpen = not isOpen
             Paint()
         end)
+        table.insert(Loc.listeners, Paint)
         Paint()
     end
 
-    Section(3, "🚀 MULAI CEPAT", [=[<b>Menggerakkan hub</b>
-• Geser <b>kotak judul</b> untuk memindahkan hub. 🔓 = bebas digeser, 🔒 = posisi dikunci.
-• <b>−</b> menyembunyikan hub menjadi logo 🦐 (ketuk logo untuk membuka lagi; logo bisa digeser). Di PC: tekan <b>RightShift</b>.
+    Section(3, "MULAI CEPAT", "QUICK START", [=[<b>Menggerakkan hub</b>
+• Geser <b>kotak judul</b> untuk memindahkan hub. Tombol kunci di header: <b>B</b> = bebas digeser, <b>K</b> = posisi dikunci.
+• <b>-</b> menyembunyikan hub menjadi logo (ketuk logo untuk membuka lagi; logo bisa digeser). Di PC: tekan <b>RightShift</b>.
 • <b>X</b> menutup hub dan menghentikan semua yang berjalan.
 
 <b>Tombol di Home</b>
-• <b>■ BERHENTI SEMUA</b> menghentikan Remote, Collect/Follow, Auto Farm Teleport, dan Auto Zona sekaligus.
-• <b>🛡 ANTI-AFK</b> mencegah dikeluarkan karena diam terlalu lama.
+• <b>BERHENTI SEMUA</b> menghentikan Remote, Collect/Follow, Auto Farm Teleport, dan Auto Zona sekaligus.
+• <b>ANTI-AFK</b> mencegah dikeluarkan karena diam terlalu lama.
+• <b>Language / Bahasa</b>: pilih Indonesia atau English (pilihan diingat saat hub dijalankan ulang).
 
 <b>Aturan umum</b>
 • Saat Auto Collect, Auto Farm, atau Auto Zona <b>berhenti</b>, karakter otomatis kembali ke posisi awal + 2 stud ke atas (tidak berlaku saat hub ditutup dengan X).
 • Collect/Follow dan Auto Zona tidak jalan bersamaan: memulai salah satunya menghentikan yang lain agar tidak rebutan kendali karakter.
-• Di tiap slot: 🔒 mengunci isian, − mengecilkan, X menghapus, RESET mengosongkan.
-• Menjalankan skrip lagi otomatis membersihkan hub lama.]=], true)
+• Di tiap slot: <b>K/B</b> mengunci/membuka isian, <b>-</b> mengecilkan, <b>X</b> menghapus, <b>RESET</b> mengosongkan.
+• Menjalankan skrip lagi otomatis membersihkan hub lama.]=], [=[<b>Moving the hub</b>
+• Drag the <b>title box</b> to move the hub. Lock button in the header: <b>F</b> = free to drag, <b>L</b> = position locked.
+• <b>-</b> hides the hub as a logo (tap the logo to open it again; the logo can be dragged). On PC: press <b>RightShift</b>.
+• <b>X</b> closes the hub and stops everything that is running.
 
-    Section(4, "🧭 FORMAT PATH (alamat objek)", [=[Path = alamat objek di game, dipisah titik, dimulai dari service. Contoh: <b>Workspace.Lobby.Decor.Palm</b>
+<b>Buttons on Home</b>
+• <b>STOP ALL</b> stops Remote, Collect/Follow, Teleport Auto Farm, and Auto Zone at once.
+• <b>ANTI-AFK</b> prevents being kicked for idling too long.
+• <b>Language / Bahasa</b>: choose Indonesia or English (your choice is remembered when you run the hub again).
+
+<b>General rules</b>
+• When Auto Collect, Auto Farm, or Auto Zone <b>stops</b>, the character automatically returns to the starting position + 2 studs up (not when the hub is closed with X).
+• Collect/Follow and Auto Zone do not run together: starting one stops the other so they do not fight over the character.
+• On every slot: <b>L/F</b> locks/unlocks the inputs, <b>-</b> shrinks it, <b>X</b> deletes it, <b>RESET</b> clears it.
+• Running the script again automatically cleans up the old hub.]=], true)
+
+    Section(4, "FORMAT PATH (alamat objek)", "PATH FORMAT (object address)", [=[Path = alamat objek di game, dipisah titik, dimulai dari service. Contoh: <b>Workspace.Lobby.Decor.Palm</b>
 
 • Nama ganda: <b>Palm[2]</b> = anak ke-2 yang bernama Palm.
 • Semua yang serupa: <b>Palm[*]</b> = SEMUA anak bernama Palm. Contoh: <b>Workspace.Lobby.Decor.Palm[*].Trunk[*]</b>
 • Titik di dalam nama ditulis <b>\.</b>
 
-<b>Cara termudah:</b> Tab Auto Collect → nyalakan <b>Select Object</b> → ketuk objek di game → <b>COPY PATH</b> → tempel di kolom path mana pun. Panel akan menulis Validasi ✅ bila path cocok dengan objeknya.]=], false)
+<b>Cara termudah:</b> Tab Auto Collect → nyalakan <b>Select Object</b> → ketuk objek di game → <b>COPY PATH</b> → tempel di kolom path mana pun. Panel menulis Validasi bila path cocok dengan objeknya.]=], [=[A path is the address of an object in the game, separated by dots, starting from the service. Example: <b>Workspace.Lobby.Decor.Palm</b>
 
-    Section(5, "🦐 TAB AUTO REMOTE", [=[Mengulang aksi game (remote) secara otomatis.
+• Duplicate names: <b>Palm[2]</b> = the 2nd child named Palm.
+• Everything similar: <b>Palm[*]</b> = ALL children named Palm. Example: <b>Workspace.Lobby.Decor.Palm[*].Trunk[*]</b>
+• A dot inside a name is written <b>\.</b>
+
+<b>Easiest way:</b> Tab Auto Collect → turn on <b>Select Object</b> → tap an object in the game → <b>COPY PATH</b> → paste it into any path box. The panel shows a Validation line when the path matches the object.]=], false)
+
+    Section(5, "TAB AUTO REMOTE", "TAB AUTO REMOTE", [=[Mengulang aksi game (remote) secara otomatis.
 
 <b>Langkah</b>
-1. Tekan <b>📌 SIMPLE SPY</b> atau <b>🔷 COBALT SPY</b> untuk memuat alat pengintai remote.
+1. Tekan <b>SIMPLE SPY</b> atau <b>COBALT SPY</b> untuk memuat alat pengintai remote.
 2. Lakukan aksi di game (mis. ambil atau klik sesuatu), lalu salin kode remote yang muncul di Spy.
 3. Tempel ke kolom kode di sebuah slot. <b>D</b> = jeda antar ulangan (detik).
-4. <b>MULAI</b> menjalankan berulang (tombol menjadi ● JALAN), <b>BERHENTI</b> menghentikan, <b>RESET</b> mengosongkan slot.
+4. <b>MULAI</b> menjalankan berulang (tombol berubah menjadi JALAN), <b>BERHENTI</b> menghentikan, <b>RESET</b> mengosongkan slot.
 
 <b>Lainnya</b>
 • <b>+ TAMBAH SLOT REMOTE</b> (biru, di bawah slot terakhir) menambah slot baru.
 • Baris atas: isi <b>Delay</b>, lalu <b>MULAI SEMUA</b> / <b>BERHENTI SEMUA</b> menjalankan semua slot yang tidak terkunci dengan delay itu.
-• Kode yang salah akan menghentikan slot itu; pesannya tampil di konsol (F9).]=], false)
+• Kode yang salah menghentikan slot itu; pesannya tampil di konsol (F9).]=], [=[Repeats game actions (remotes) automatically.
 
-    Section(6, "📦 TAB AUTO COLLECT", [=[<b>Kartu di atas</b>
-• <b>🔎 DEX++</b>: membuka penjelajah objek game (butuh executor).
-• <b>Select Object</b>: nyalakan, lalu <b>ketuk objek di game</b>. Path, nama, class, posisi, dan isinya tampil; objek dilingkari kotak biru. <b>Semua Serupa</b> (bawaan ON) menjadikan objek serupa 1 path memakai [*]. <b>COPY PATH</b> menyalin; <b>↑ INDUK</b> naik ke induknya (mis. dari Part ke Model).
+<b>Steps</b>
+1. Press <b>SIMPLE SPY</b> or <b>COBALT SPY</b> to load a remote spy tool.
+2. Do an action in the game (e.g. pick up or click something), then copy the remote code shown in the Spy.
+3. Paste it into the code box of a slot. <b>D</b> = delay between repeats (seconds).
+4. <b>START</b> runs it repeatedly (the button changes to RUNNING), <b>STOP</b> stops it, <b>RESET</b> clears the slot.
+
+<b>More</b>
+• <b>+ ADD REMOTE SLOT</b> (blue, below the last slot) adds a new slot.
+• Top row: enter a <b>Delay</b>, then <b>START ALL</b> / <b>STOP ALL</b> runs every unlocked slot with that delay.
+• Invalid code stops that slot; the message appears in the console (F9).]=], false)
+
+    Section(6, "TAB AUTO COLLECT", "TAB AUTO COLLECT", [=[<b>Kartu di atas</b>
+• <b>DEX++</b>: membuka penjelajah objek game (butuh executor).
+• <b>Select Object</b>: nyalakan, lalu <b>ketuk objek di game</b>. Path, nama, class, posisi, dan isinya tampil; objek dilingkari kotak biru. <b>Semua Serupa</b> (bawaan ON) menjadikan objek serupa 1 path memakai [*]. <b>COPY PATH</b> menyalin; <b>INDUK</b> naik ke induknya (mis. dari Part ke Model).
 • <b>ESP Objek</b>: isi path, lalu nyalakan <b>Tracer</b> (garis), <b>Highlight</b>, <b>Nama ESP</b> (nama + jarak), <b>Box ESP</b> (rangka kubus). Pilih <b>Warna</b> atau <b>Rainbow Mode</b>.
 
 <b>Slot</b> (+ TAMBAH SLOT di paling bawah)
 • Tombol <b>mode</b> di header (Collect / Follow) mengganti mode. Bila ada isian, muncul <b>Sure? [5]</b>: tekan lagi dalam 5 detik untuk konfirmasi (isi slot di-reset). Nama slot ikut berganti.
-• <b>★ prioritas</b>: slot berbintang dijalankan lebih dulu; sisanya bergiliran menurut siapa yang dimulai duluan.
+• <b>Bintang (prioritas)</b>: slot berbintang dijalankan lebih dulu; sisanya bergiliran menurut siapa yang dimulai duluan.
 • Toggle <b>Nama Objek sesuai Nama Slot</b>: Nama ESP memakai nama slot.
 
 <b>Mode COLLECT</b> (mendekati / mengumpulkan objek)
 • Isi <b>Path Objek</b>. <b>TP</b> = teleport langsung, <b>TW</b> = jalan (tween) + noclip.
 • <b>D</b> = jeda antar giliran. <b>&lt;Y</b> = lewati objek yang posisinya di bawah nilai Y itu.
 • Path yang mencakup banyak objek ([*]): dikunjungi dari yang terdekat sampai semua.
-• <b>📡 PINDAI LOKASI</b> mencetak dan menyalin koordinatmu.
+• <b>PINDAI LOKASI</b> mencetak dan menyalin koordinatmu.
 
 <b>Mode FOLLOW</b> (mengikuti objek terus-menerus)
 • Pilih arah karakter terhadap objek (Atas/Bawah, Kiri/Kanan, Depan/Belakang; boleh digabung antar pasangan) dan <b>Distance</b> dalam stud.
-• Bagian-bagian objek otomatis dijadikan satu kesatuan, mis. <b>Workspace.Enemies.Bandit[*].UpperTorso</b> → seluruh Bandit. Musuh yang mati dianggap hilang.
-• Objek hilang → langsung pindah ke objek serupa terdekat; tidak ada lagi → kembali ke posisi semula.]=], false)
+• Bagian-bagian objek otomatis dijadikan satu kesatuan, mis. <b>Workspace.Enemies.Bandit[*].UpperTorso</b> menjadi seluruh Bandit. Musuh yang mati dianggap hilang.
+• Objek hilang: langsung pindah ke objek serupa terdekat; tidak ada lagi: kembali ke posisi semula.]=], [=[<b>Cards at the top</b>
+• <b>DEX++</b>: opens a game object explorer (needs an executor).
+• <b>Select Object</b>: turn it on, then <b>tap an object in the game</b>. Its path, name, class, position, and contents appear; the object is outlined with a blue box. <b>All Similar</b> (ON by default) turns similar objects into 1 path using [*]. <b>COPY PATH</b> copies it; <b>PARENT</b> goes up to the parent (e.g. from a Part to its Model).
+• <b>Object ESP</b>: enter a path, then turn on <b>Tracer</b> (line), <b>Highlight</b>, <b>Name ESP</b> (name + distance), <b>Box ESP</b> (cube frame). Pick a <b>Color</b> or <b>Rainbow Mode</b>.
 
-    Section(7, "📍 TAB AUTO TELEPORT", [=[<b>Posisi &amp; Teleport</b>: <b>SALIN POSISI</b> menyalin koordinatmu ke kotak. Isi X, Y, Z lalu <b>TELEPORT</b> (atau JALAN KE SINI).
+<b>Slots</b> (+ ADD COLLECT SLOT at the very bottom)
+• The <b>mode</b> button in the header (Collect / Follow) switches the mode. If there is any input, <b>Sure? [5]</b> appears: press again within 5 seconds to confirm (the slot is reset). The slot name changes too.
+• <b>Star (priority)</b>: starred slots run first; the rest take turns in the order they were started.
+• The <b>Object Name follows Slot Name</b> toggle makes Name ESP use the slot name.
 
-<b>Cara Perpindahan (Global)</b>: <b>Set All Teleport</b> / <b>Set All Jalan + Noclip</b> mengubah semua titik sekaligus. Kec (kecepatan) dan Tinggi (lintasan) muncul bila ada yang Jalan + Noclip. <b>⏹ BERHENTI</b> menghentikan perjalanan / Auto Farm.
+<b>COLLECT mode</b> (approach / collect objects)
+• Fill in the <b>Object Path</b>. <b>TP</b> = direct teleport, <b>TW</b> = walk (tween) + noclip.
+• <b>D</b> = delay between turns. <b>&lt;Y</b> = skip objects whose position is below that Y value.
+• A path covering many objects ([*]) is visited nearest first until all are done.
+• <b>SCAN LOCATION</b> prints and copies your coordinates.
+
+<b>FOLLOW mode</b> (keeps following an object)
+• Choose the character direction relative to the object (Up/Down, Left/Right, Front/Back; one per pair, pairs can be combined) and the <b>Distance</b> in studs.
+• Object parts are grouped into one unit automatically, e.g. <b>Workspace.Enemies.Bandit[*].UpperTorso</b> becomes the whole Bandit. A dead enemy counts as gone.
+• Object gone: it jumps to the nearest similar object; none left: it returns to the original position.]=], false)
+
+    Section(7, "TAB AUTO TELEPORT", "TAB AUTO TELEPORT", [=[<b>Posisi &amp; Teleport</b>: <b>SALIN POSISI SEKARANG</b> menyalin koordinatmu ke kotak. Isi X, Y, Z lalu <b>TELEPORT</b> (atau JALAN KE SINI).
+
+<b>Cara Perpindahan (Global)</b>: <b>Set All Teleport</b> / <b>Set All Jalan + Noclip</b> mengubah semua titik sekaligus. Kec (kecepatan) dan Tinggi (lintasan) muncul bila ada yang Jalan + Noclip. <b>BERHENTI</b> menghentikan perjalanan / Auto Farm.
 
 <b>Box Mark</b>: menandai titik tersimpan dengan kotak ungu setinggi karakter. <b>Pos Name</b> = nama + jarak di atas kotak; <b>Tembus Tembok</b> = terlihat dari balik tembok.
 
-<b>Titik Tersimpan</b>: <b>➕ SIMPAN POSISI SEKARANG</b> membuat titik. Tiap titik punya mode <b>TP / Jalan + Noclip</b>, Delay, serta Kec/Tinggi sendiri; <b>GO</b> untuk pergi, <b>X</b> untuk hapus. <b>HAPUS SEMUA</b> meminta konfirmasi 5 detik.
+<b>Titik Tersimpan</b>: <b>SIMPAN POSISI SEKARANG</b> membuat titik. Tiap titik punya mode <b>TP / Jalan + Noclip</b>, Delay, serta Kec/Tinggi sendiri; <b>GO</b> untuk pergi, <b>X</b> untuk hapus. <b>HAPUS SEMUA TITIK</b> meminta konfirmasi 5 detik.
 
 <b>Auto Farm Berantai</b>
 1. <b>PILIH URUTAN TITIK</b>, lalu ketuk tombol + pada titik sesuai urutan (angka muncul).
-2. Atur Delay dan Set All untuk titik terpilih (kolom kosong / «beda» = nilainya berbeda antar titik).
-3. <b>▶ MULAI AUTO FARM</b> mengulang titik-titik itu berurutan. Berhenti → kembali ke posisi awal + 2 stud.]=], false)
+2. Atur Delay dan Set All untuk titik terpilih (kolom kosong atau beda = nilainya berbeda antar titik).
+3. <b>MULAI AUTO FARM</b> mengulang titik-titik itu berurutan. Berhenti: kembali ke posisi awal + 2 stud.]=], [=[<b>Position &amp; Teleport</b>: <b>COPY CURRENT POSITION</b> copies your coordinates into the box. Fill in X, Y, Z then press <b>TELEPORT</b> (or WALK HERE).
 
-    Section(8, "🗺 TAB AUTO ZONE", [=[Untuk area (zona) tempat barang muncul acak. Alur: zona → scan → pengambilan &amp; setor → jalan.
+<b>Movement Mode (Global)</b>: <b>Set All Teleport</b> / <b>Set All Walk + Noclip</b> changes every point at once. Spd (speed) and Height (arc) appear when any point uses Walk + Noclip. <b>STOP</b> stops the trip / Auto Farm.
+
+<b>Box Mark</b>: marks saved points with a purple box as tall as the character. <b>Pos Name</b> = name + distance above the box; <b>See Through Walls</b> = visible from behind walls.
+
+<b>Saved Points</b>: <b>SAVE CURRENT POSITION</b> creates a point. Each point has its own <b>TP / Walk + Noclip</b> mode, Delay, and Spd/Height; <b>GO</b> to travel, <b>X</b> to delete. <b>DELETE ALL POINTS</b> asks for a 5 second confirmation.
+
+<b>Chained Auto Farm</b>
+1. <b>PICK POINT ORDER</b>, then tap the + button on the points in order (numbers appear).
+2. Set Delay and Set All for the selected points (an empty or mixed box = the value differs between points).
+3. <b>START AUTO FARM</b> repeats those points in order. When it stops: back to the starting position + 2 studs.]=], false)
+
+    Section(8, "TAB AUTO ZONE", "TAB AUTO ZONE", [=[Untuk area (zona) tempat barang muncul acak. Alur: zona, scan, pengambilan &amp; setor, lalu jalan.
 
 <b>1. Tentukan zona</b> (tombol PART / KOTAK / BOLA / POLIGON memilih zona tersimpan yang aktif)
-• <b>⚙ OTOMATIS</b>: <b>🔍 DETEKSI ZONA</b> mencari Part zona yang menaungi posisimu (berdirilah di dalam zona) lalu kamu pilih dari daftar. <b>👆 KETUK PART</b> = ketuk Part zona di game. <b>+ PATH</b> = tempel path Part zona (boleh Nama[*]).
-• <b>✋ MANUAL</b>: <b>Set Sudut A</b> + <b>Set Sudut B</b> (berdiri di tiap sudut) = kotak. <b>Set Titik Tengah</b> + Radius = bola. <b>+ Titik Poligon</b> di tiap sudut (min. 3) = bentuk bebas. <b>Tinggi di atas sudut</b> = seberapa tinggi zona dihitung.
+• <b>OTOMATIS</b>: <b>DETEKSI ZONA</b> mencari Part zona yang menaungi posisimu (berdirilah di dalam zona) lalu kamu pilih dari daftar. <b>KETUK PART</b> = ketuk Part zona di game. <b>+ PATH</b> = tempel path Part zona (boleh Nama[*]).
+• <b>MANUAL</b>: <b>Set Sudut A</b> + <b>Set Sudut B</b> (berdiri di tiap sudut) = kotak. <b>Set Titik Tengah</b> + Radius = bola. <b>+ Titik Poligon</b> di tiap sudut (min. 3) = bentuk bebas. <b>Tinggi di atas sudut</b> = seberapa tinggi zona dihitung.
 • <b>Tampilkan Zona</b> menggambarnya (A oranye, B biru); pilih warna atau Rainbow. <b>Hapus Zona</b> mengosongkan.
 
-<b>2. Isi Zona</b>: <b>🔄 SCAN</b> (atau Auto Scan) menghitung isi per jenis, mis. Box ×19, Chest ×11. Centang jenis yang mau diambil. Objek lebih besar dari batas stud diabaikan agar peta / dekorasi tidak ikut.
+<b>2. Isi Zona</b>: <b>SCAN</b> (atau Auto Scan) menghitung isi per jenis, mis. Box x19, Chest x11. Centang jenis yang mau diambil. Objek lebih besar dari batas stud diabaikan agar peta / dekorasi tidak ikut.
 
-<b>3. Pengambilan &amp; Setor</b>: pilih <b>Cara ambil</b> (Auto, Dekati saja, Tekan E, Tahan E, Prompt, Sentuh, Klik). <b>📍 SET TITIK SETOR</b> = posisi tempat membawa barang kembali; <b>Setor tiap N barang</b>. <b>Tunggu konfirmasi</b> dan <b>Maks percobaan</b>: barang dicek dulu sudah hilang / terangkat sebelum karakter kembali.
+<b>3. Pengambilan &amp; Setor</b>: pilih <b>Cara ambil</b> (Auto, Dekati saja, Tekan E, Tahan E, Prompt, Sentuh, Klik). <b>SET TITIK SETOR</b> = posisi tempat membawa barang kembali; <b>Setor tiap N barang</b>. <b>Tunggu konfirmasi</b> dan <b>Maks percobaan</b>: barang dicek dulu sudah hilang / terangkat sebelum karakter kembali.
 
-<b>4. ▶ MULAI AUTO ZONA</b>: teleport ke barang terdekat → ambil → cek → setor → barang berikutnya. Bila zona kosong, karakter menunggu di zona agar barang muncul. Berhenti → kembali ke posisi awal + 2 stud.]=], false)
+<b>4. MULAI AUTO ZONA</b>: teleport ke barang terdekat, ambil, cek, setor, lalu barang berikutnya. Bila zona kosong, karakter menunggu di zona agar barang muncul. Berhenti: kembali ke posisi awal + 2 stud.]=], [=[For areas (zones) where items spawn randomly. Flow: zone, scan, pickup &amp; deposit, then run.
 
-    Section(9, "🛠 TIPS & MASALAH UMUM", [=[• Tidak terjadi apa-apa? Pastikan karakter hidup, slot tidak 🔒, dan path benar (cek lewat Select Object → Validasi ✅).
+<b>1. Set the zone</b> (the PART / BOX / SPHERE / POLYGON buttons choose the saved zone that is active)
+• <b>AUTOMATIC</b>: <b>DETECT ZONE</b> looks for zone Parts that cover your position (stand inside the zone) and you pick from the list. <b>TAP PART</b> = tap the zone Part in the game. <b>+ PATH</b> = paste the zone Part path (Name[*] allowed).
+• <b>MANUAL</b>: <b>Set Corner A</b> + <b>Set Corner B</b> (stand at each corner) = box. <b>Set Center Point</b> + Radius = sphere. <b>+ Polygon Point</b> at each corner (min. 3) = free shape. <b>Height above corners</b> = how tall the zone counts.
+• <b>Show Zone</b> draws it (A orange, B blue); pick a color or Rainbow. <b>Clear Zone</b> empties it.
+
+<b>2. Zone Contents</b>: <b>SCAN</b> (or Auto Scan) counts the contents per type, e.g. Box x19, Chest x11. Tick the types you want to pick up. Objects larger than the stud limit are ignored so the map / decorations are left out.
+
+<b>3. Pickup &amp; Deposit</b>: choose a <b>Pickup method</b> (Auto, Approach only, Press E, Hold E, Prompt, Touch, Click). <b>SET DEPOSIT POINT</b> = the position where items are brought back to; <b>Deposit every N items</b>. <b>Confirmation wait</b> and <b>Max attempts</b>: each item is checked to be gone / lifted before the character goes back.
+
+<b>4. START AUTO ZONE</b>: teleports to the nearest item, picks it up, checks, deposits, then goes to the next one. If the zone is empty, the character waits in the zone so items can spawn. When it stops: back to the starting position + 2 studs.]=], false)
+
+    Section(9, "TIPS & MASALAH UMUM", "TIPS & COMMON PROBLEMS", [=[• Tidak terjadi apa-apa? Pastikan karakter hidup, slot tidak terkunci, dan path benar (cek lewat Select Object, baris Validasi).
 • Beberapa fitur memakai fungsi executor: Dex++ &amp; Spy (loadstring / HttpGet), Copy Path (setclipboard), Prompt / Klik / Sentuh (fireproximityprompt / fireclickdetector / firetouchinterest). Tanpa itu fitur terkait tidak berfungsi, fitur lain tetap aman.
 • Tekan / Tahan E mengirim input tombol sungguhan: jendela game harus aktif dan prompt sedang terlihat.
 • Setelah respawn: Follow dan Auto Farm melanjutkan dengan karakter baru; Collect menunggu karakter muncul.
 • Jika game memakai StreamingEnabled, hanya objek yang sudah termuat di dekatmu yang tampil / terhitung.
-• Pesan status dan error ada di konsol (tekan F9 atau ketik /console).]=], false)
+• Pesan status dan error ada di konsol (tekan F9 atau ketik /console).]=], [=[• Nothing happens? Make sure the character is alive, the slot is not locked, and the path is correct (check with Select Object, the Validation line).
+• Some features use executor functions: Dex++ &amp; Spy (loadstring / HttpGet), Copy Path (setclipboard), Prompt / Click / Touch (fireproximityprompt / fireclickdetector / firetouchinterest). Without them the related feature does not work; the other features stay safe.
+• Press / Hold E sends real key input: the game window must be active and the prompt must be visible.
+• After a respawn: Follow and Auto Farm continue with the new character; Collect waits for the character to appear.
+• If the game uses StreamingEnabled, only objects already loaded near you are shown / counted.
+• Status and error messages are in the console (press F9 or type /console).]=], false)
 end
 
 -- ========== KONTEN TAB REMOTE ==========
@@ -1448,7 +1898,7 @@ local SimpleSpyBtn = Instance.new("TextButton")
 SimpleSpyBtn.Parent = RemoteSpyFrame
 SimpleSpyBtn.Size = UDim2.new(0.48, 0, 1, 0)
 SimpleSpyBtn.BackgroundColor3 = Color3.fromRGB(110, 100, 210)
-SimpleSpyBtn.Text = "📌 SIMPLE SPY"
+SimpleSpyBtn.Text = "SIMPLE SPY"
 SimpleSpyBtn.TextColor3 = Color3.new(1, 1, 1)
 SimpleSpyBtn.Font = Enum.Font.GothamBold
 SimpleSpyBtn.TextSize = 9
@@ -1461,7 +1911,7 @@ CobaltSpyBtn.Parent = RemoteSpyFrame
 CobaltSpyBtn.Size = UDim2.new(0.48, 0, 1, 0)
 CobaltSpyBtn.Position = UDim2.new(0.52, 0, 0, 0)
 CobaltSpyBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 150)
-CobaltSpyBtn.Text = "🔷 COBALT SPY"
+CobaltSpyBtn.Text = "COBALT SPY"
 CobaltSpyBtn.TextColor3 = Color3.new(1, 1, 1)
 CobaltSpyBtn.Font = Enum.Font.GothamBold
 CobaltSpyBtn.TextSize = 9
@@ -1504,7 +1954,7 @@ StartAllBtn.Parent = GlobalControl
 StartAllBtn.Size = UDim2.new(0.36, 0, 1, 0)
 StartAllBtn.Position = UDim2.new(0.27, 0, 0, 0)
 StartAllBtn.BackgroundColor3 = Color3.fromRGB(46, 160, 90)
-StartAllBtn.Text = "▶ MULAI SEMUA"
+StartAllBtn.Text = "MULAI SEMUA"
 StartAllBtn.TextColor3 = Color3.new(1, 1, 1)
 StartAllBtn.Font = Enum.Font.GothamBold
 StartAllBtn.TextSize = 9
@@ -1517,7 +1967,7 @@ StopAllBtn.Parent = GlobalControl
 StopAllBtn.Size = UDim2.new(0.36, 0, 1, 0)
 StopAllBtn.Position = UDim2.new(0.64, 0, 0, 0)
 StopAllBtn.BackgroundColor3 = Color3.fromRGB(205, 70, 70)
-StopAllBtn.Text = "■ BERHENTI SEMUA"
+StopAllBtn.Text = "BERHENTI SEMUA"
 StopAllBtn.TextColor3 = Color3.new(1, 1, 1)
 StopAllBtn.Font = Enum.Font.GothamBold
 StopAllBtn.TextSize = 9
@@ -1621,7 +2071,7 @@ do
     DexBtn.Parent = Holder
     DexBtn.Size = UDim2.new(1, 0, 1, 0)
     DexBtn.BackgroundColor3 = BTN_TEAL
-    DexBtn.Text = "🔎 DEX++ (Explorer)"
+    DexBtn.Text = "DEX++ (Explorer)"
     DexBtn.TextColor3 = Color3.new(1, 1, 1)
     DexBtn.Font = Enum.Font.GothamBold
     DexBtn.TextSize = 11
@@ -1642,14 +2092,14 @@ do
             end)
             if hubDestroyed then return end
             if ok then
-                DexBtn.Text = "✅ Dex++ dimuat"
+                DexBtn.Text = "Dex++ dimuat"
             else
-                DexBtn.Text = "⚠ Gagal memuat (cek URL / executor)"
+                DexBtn.Text = "Gagal memuat (cek URL / executor)"
                 print("[Dex++] " .. tostring(err))
             end
             task.wait(2)
             if hubDestroyed then return end
-            DexBtn.Text = "🔎 DEX++ (Explorer)"
+            DexBtn.Text = "DEX++ (Explorer)"
             busy = false
         end)
     end)
@@ -1755,9 +2205,9 @@ do
         end
 
         if table.find(matches, inst) then
-            table.insert(L, "Validasi: ✅ path cocok dan mencakup objek ini")
+            table.insert(L, "Validasi: path cocok dan mencakup objek ini")
         else
-            table.insert(L, "Validasi: ⚠ path tidak mencakup objek ini")
+            table.insert(L, "Validasi: path tidak mencakup objek ini")
         end
         return table.concat(L, "\n")
     end
@@ -1875,7 +2325,7 @@ do
     CopyBtn.Size = UDim2.new(0.64, -8, 0, 24)
     CopyBtn.Position = UDim2.new(0, 4, 0, 30)
     CopyBtn.BackgroundColor3 = BTN_TEAL
-    CopyBtn.Text = "📋 COPY PATH"
+    CopyBtn.Text = "COPY PATH"
     CopyBtn.TextColor3 = Color3.new(1, 1, 1)
     CopyBtn.Font = Enum.Font.GothamBold
     CopyBtn.TextSize = 10
@@ -1912,7 +2362,7 @@ do
 
     CopyBtn.MouseButton1Click:Connect(function()
         if not Sel.path then
-            Flash(CopyBtn, "⚠ Pilih objek dulu", "📋 COPY PATH")
+            Flash(CopyBtn, "Pilih objek dulu", "COPY PATH")
             return
         end
         local ok = pcall(function()
@@ -1920,10 +2370,10 @@ do
             setclipboard(Sel.path)
         end)
         if ok then
-            Flash(CopyBtn, "✅ TERSALIN", "📋 COPY PATH")
+            Flash(CopyBtn, "TERSALIN", "COPY PATH")
         else
             print("[Select Object] Path: " .. Sel.path)
-            Flash(CopyBtn, "⚠ Tanpa clipboard (path di konsol)", "📋 COPY PATH")
+            Flash(CopyBtn, "Tanpa clipboard (path di konsol)", "COPY PATH")
         end
     end)
 
@@ -1931,7 +2381,7 @@ do
     UpBtn.MouseButton1Click:Connect(function()
         local obj = Sel.obj
         if not obj or not obj:IsDescendantOf(game) then
-            Flash(UpBtn, "⚠ -", "↑ INDUK")
+            Flash(UpBtn, "-", "↑ INDUK")
             return
         end
         local parent = obj.Parent
@@ -2048,10 +2498,10 @@ end
 -- ==================================================
 local function SetSlotButton(slotData, running)
     if running then
-        slotData.startStopBtn.Text = "■ BERHENTI"
+        slotData.startStopBtn.Text = "BERHENTI"
         slotData.startStopBtn.BackgroundColor3 = BTN_RED
     else
-        slotData.startStopBtn.Text = "▶ MULAI"
+        slotData.startStopBtn.Text = "MULAI"
         slotData.startStopBtn.BackgroundColor3 = BTN_GREEN
     end
 end
@@ -2586,7 +3036,7 @@ local function CreateCollectSlot()
     SlotLockBtn.Size = UDim2.new(0, 22, 0, 22)
     SlotLockBtn.Position = UDim2.new(1, -52, 0.5, -11)
     SlotLockBtn.BackgroundColor3 = UNLOCK_COLOR
-    SlotLockBtn.Text = "🔓"
+    SlotLockBtn.Text = "B"
     SlotLockBtn.TextColor3 = Color3.new(1, 1, 1)
     SlotLockBtn.Font = Enum.Font.GothamBold
     SlotLockBtn.TextSize = 10
@@ -2713,7 +3163,7 @@ local function CreateCollectSlot()
     StartStopBtn.Size = UDim2.new(0.38, 0, 0, 18)
     StartStopBtn.Position = UDim2.new(0.60, 0, 0, 168)
     StartStopBtn.BackgroundColor3 = BTN_GREEN
-    StartStopBtn.Text = "▶ MULAI"
+    StartStopBtn.Text = "MULAI"
     StartStopBtn.TextColor3 = Color3.new(1, 1, 1)
     StartStopBtn.Font = Enum.Font.GothamBold
     StartStopBtn.TextSize = 7
@@ -2726,7 +3176,7 @@ local function CreateCollectSlot()
     ScanPosBtn.Size = UDim2.new(1, 0, 0, 22)
     ScanPosBtn.Position = UDim2.new(0, 0, 0, 0)
     ScanPosBtn.BackgroundColor3 = BTN_TEAL
-    ScanPosBtn.Text = "📡 PINDAI LOKASI (Cetak X Y Z ke Konsol)"
+    ScanPosBtn.Text = "PINDAI LOKASI (Cetak X Y Z ke Konsol)"
     ScanPosBtn.TextColor3 = Color3.new(1, 1, 1)
     ScanPosBtn.Font = Enum.Font.GothamBold
     ScanPosBtn.TextSize = 8
@@ -3032,13 +3482,13 @@ local function CreateCollectSlot()
     ScanPosBtn.MouseButton1Click:Connect(function()
         local root = GetHumanoidRootPart()
         if not root then
-            ScanPosBtn.Text = "⚠ Karakter tidak ditemukan (tap untuk coba lagi)"
+            ScanPosBtn.Text = "Karakter tidak ditemukan (tap untuk coba lagi)"
             ScanPosBtn.BackgroundColor3 = BTN_RED
             return
         end
         local pos = root.Position
         local coordText = string.format("X: %.2f  |  Y: %.2f  |  Z: %.2f", pos.X, pos.Y, pos.Z)
-        ScanPosBtn.Text = "📍 " .. coordText
+        ScanPosBtn.Text = "" .. coordText
         ScanPosBtn.BackgroundColor3 = BTN_GREEN
         print("[Pindai Lokasi Slot " .. slotId .. "] " .. coordText)
         pcall(function()
@@ -3063,10 +3513,10 @@ local function CreateCollectSlot()
         slotData.locked = not slotData.locked
         local editable = not slotData.locked
         if slotData.locked then
-            SlotLockBtn.Text = "🔒"
+            SlotLockBtn.Text = "K"
             SlotLockBtn.BackgroundColor3 = LOCK_COLOR
         else
-            SlotLockBtn.Text = "🔓"
+            SlotLockBtn.Text = "B"
             SlotLockBtn.BackgroundColor3 = UNLOCK_COLOR
         end
         SlotNameBox.TextEditable = editable
@@ -3170,7 +3620,7 @@ local function CreateRemoteSlot()
     RLock.Size = UDim2.new(0, 22, 0, 22)
     RLock.Position = UDim2.new(1, -52, 0.5, -11)
     RLock.BackgroundColor3 = UNLOCK_COLOR
-    RLock.Text = "🔓"
+    RLock.Text = "B"
     RLock.TextColor3 = Color3.new(1, 1, 1)
     RLock.Font = Enum.Font.GothamBold
     RLock.TextSize = 10
@@ -3344,7 +3794,7 @@ local function CreateRemoteSlot()
     -- Tampilan tombol mengikuti status
     rData.refresh = function()
         if rData.active then
-            RStartBtn.Text = "● JALAN"
+            RStartBtn.Text = "JALAN"
             RStartBtn.BackgroundColor3 = Color3.fromRGB(30, 110, 65)
         else
             RStartBtn.Text = "MULAI"
@@ -3355,13 +3805,13 @@ local function CreateRemoteSlot()
     RLock.MouseButton1Click:Connect(function()
         rData.locked = not rData.locked
         if rData.locked then
-            RLock.Text = "🔒"
+            RLock.Text = "K"
             RLock.BackgroundColor3 = LOCK_COLOR
             RName.TextEditable = false
             RemoteCodeBox.TextEditable = false
             RDelayBox.TextEditable = false
         else
-            RLock.Text = "🔓"
+            RLock.Text = "B"
             RLock.BackgroundColor3 = UNLOCK_COLOR
             RName.TextEditable = true
             RemoteCodeBox.TextEditable = true
@@ -3818,9 +4268,9 @@ CreateRemoteSlot()
     end
 
     -- ===== Kartu 1: Posisi & Teleport =====
-    local CardPos = NewCard(1, "📍 POSISI & TELEPORT")
+    local CardPos = NewCard(1, "POSISI & TELEPORT")
     local RowCopy = NewRow(CardPos, 1, 24)
-    local CopyPosBtn = MakeButton(RowCopy, "📋 SALIN POSISI SEKARANG", BTN_TEAL, UDim2.new(1, 0, 1, 0))
+    local CopyPosBtn = MakeButton(RowCopy, "SALIN POSISI SEKARANG", BTN_TEAL, UDim2.new(1, 0, 1, 0))
     local RowPos = NewRow(CardPos, 2, 24)
     local PosBox = MakeBox(RowPos, "X, Y, Z (pisah koma)", "", UDim2.new(0.62, 0, 1, 0))
     local GoPosBtn = MakeButton(RowPos, "TELEPORT", BTN_ORANGE, UDim2.new(0.36, 0, 1, 0), UDim2.new(0.64, 0, 0, 0))
@@ -3831,7 +4281,7 @@ CreateRemoteSlot()
     end
 
     -- ===== Kartu 2: Cara Perpindahan (GLOBAL: semua slot sekaligus) =====
-    local CardMove = NewCard(2, "🚶 CARA PERPINDAHAN (GLOBAL)")
+    local CardMove = NewCard(2, "CARA PERPINDAHAN (GLOBAL)")
     local globalGroup = MakeGroup(CardMove, {
         orderSet = 1, orderInfo = 2, orderSpeed = 3,
         getTargets = function() return TP.points end,
@@ -3843,10 +4293,10 @@ CreateRemoteSlot()
         end,
     })
     local RowStop = NewRow(CardMove, 4, 24)
-    local StopMoveBtn = MakeButton(RowStop, "⏹ BERHENTI", BTN_GRAY, UDim2.new(1, 0, 1, 0))
+    local StopMoveBtn = MakeButton(RowStop, "BERHENTI", BTN_GRAY, UDim2.new(1, 0, 1, 0))
 
     -- ===== Kartu: Box Mark (di bawah Cara Perpindahan global) =====
-    local CardMark = NewCard(3, "🟪 BOX MARK (TANDA TITIK)")
+    local CardMark = NewCard(3, "BOX MARK (TANDA TITIK)")
     local RowMark = NewRow(CardMark, 1, 22)
     local RowThrough = NewRow(CardMark, 2, 22)
     local posNameToggle
@@ -3868,16 +4318,16 @@ CreateRemoteSlot()
     RowThrough.Visible = false
 
     -- ===== Kartu 3: Titik Tersimpan (slot) =====
-    local CardPoints = NewCard(4, "📋 TITIK TERSIMPAN")
+    local CardPoints = NewCard(4, "TITIK TERSIMPAN")
     local RowAdd = NewRow(CardPoints, 1, 24)
-    local AddPointBtn = MakeButton(RowAdd, "➕ SIMPAN POSISI SEKARANG", BTN_GREEN, UDim2.new(1, 0, 1, 0))
+    local AddPointBtn = MakeButton(RowAdd, "SIMPAN POSISI SEKARANG", BTN_GREEN, UDim2.new(1, 0, 1, 0))
     local RowDel = NewRow(CardPoints, 9999, 24)
-    local DelAllBtn = MakeButton(RowDel, "🗑 HAPUS SEMUA TITIK", BTN_RED, UDim2.new(1, 0, 1, 0))
+    local DelAllBtn = MakeButton(RowDel, "HAPUS SEMUA TITIK", BTN_RED, UDim2.new(1, 0, 1, 0))
 
     -- ===== Kartu 4: Auto Farm Berantai (hanya slot terpilih) =====
-    local CardFarm = NewCard(5, "🔁 AUTO FARM BERANTAI")
+    local CardFarm = NewCard(5, "AUTO FARM BERANTAI")
     local RowPick = NewRow(CardFarm, 1, 24)
-    local PickBtn = MakeButton(RowPick, "📝 PILIH URUTAN TITIK", BTN_BLUE, UDim2.new(1, 0, 1, 0))
+    local PickBtn = MakeButton(RowPick, "PILIH URUTAN TITIK", BTN_BLUE, UDim2.new(1, 0, 1, 0))
     local farmGroup = MakeGroup(CardFarm, {
         orderDelay = 2, orderSet = 3, orderInfo = 4, orderSpeed = 5,
         getTargets = function() return TP.seq end,
@@ -3885,7 +4335,7 @@ CreateRemoteSlot()
         flashEmpty = "Pilih titik dulu (Pilih Urutan Titik)",
     })
     local RowFarm = NewRow(CardFarm, 6, 26)
-    local FarmBtn = MakeButton(RowFarm, "▶ MULAI AUTO FARM", BTN_GREEN, UDim2.new(1, 0, 1, 0), nil, 10)
+    local FarmBtn = MakeButton(RowFarm, "MULAI AUTO FARM", BTN_GREEN, UDim2.new(1, 0, 1, 0), nil, 10)
 
     RefreshGroups = function()
         globalGroup.refresh()
@@ -3908,10 +4358,10 @@ CreateRemoteSlot()
 
     local function UpdateFarmBtn()
         if TP.farmActive then
-            FarmBtn.Text = "⏹ HENTIKAN AUTO FARM"
+            FarmBtn.Text = "HENTIKAN AUTO FARM"
             FarmBtn.BackgroundColor3 = BTN_RED
         else
-            FarmBtn.Text = "▶ MULAI AUTO FARM"
+            FarmBtn.Text = "MULAI AUTO FARM"
             FarmBtn.BackgroundColor3 = BTN_GREEN
         end
     end
@@ -4200,7 +4650,7 @@ CreateRemoteSlot()
             return
         end
         if #TP.seq == 0 then
-            FarmBtn.Text = "⚠ PILIH TITIK DULU"
+            FarmBtn.Text = "PILIH TITIK DULU"
             task.delay(1.2, UpdateFarmBtn)
             return
         end
@@ -4251,9 +4701,9 @@ CreateRemoteSlot()
             if setclipboard then setclipboard(txt) end
         end)
         PosBox.Text = txt
-        CopyPosBtn.Text = "✅ TERSALIN"
+        CopyPosBtn.Text = "TERSALIN"
         task.delay(1, function()
-            CopyPosBtn.Text = "📋 SALIN POSISI SEKARANG"
+            CopyPosBtn.Text = "SALIN POSISI SEKARANG"
         end)
     end)
 
@@ -4264,7 +4714,7 @@ CreateRemoteSlot()
             if v then table.insert(nums, v) end
         end
         if #nums < 3 then
-            GoPosBtn.Text = "⚠ X,Y,Z?"
+            GoPosBtn.Text = "X,Y,Z?"
             task.delay(1.2, PosBtnText)
             return
         end
@@ -4287,7 +4737,7 @@ CreateRemoteSlot()
     local delConfirm = false
     local function ResetDelBtn()
         delConfirm = false
-        DelAllBtn.Text = "🗑 HAPUS SEMUA TITIK"
+        DelAllBtn.Text = "HAPUS SEMUA TITIK"
         DelAllBtn.BackgroundColor3 = BTN_RED
     end
     DelAllBtn.MouseButton1Click:Connect(function()
@@ -4316,10 +4766,10 @@ CreateRemoteSlot()
     PickBtn.MouseButton1Click:Connect(function()
         TP.pickMode = not TP.pickMode
         if TP.pickMode then
-            PickBtn.Text = "✅ SELESAI MEMILIH"
+            PickBtn.Text = "SELESAI MEMILIH"
             PickBtn.BackgroundColor3 = BTN_GREEN
         else
-            PickBtn.Text = "📝 PILIH URUTAN TITIK"
+            PickBtn.Text = "PILIH URUTAN TITIK"
             PickBtn.BackgroundColor3 = BTN_BLUE
         end
         RefreshSeq()
@@ -4487,7 +4937,7 @@ end)()
     local ZCOL = Color3.fromRGB(60, 220, 120)       -- warna tampilan zona (bisa dipilih di kartu Zona)
 
     -- ===== KARTU 1: ZONA =====
-    local CardZone = NewCard(1, "🗺 ZONA")
+    local CardZone = NewCard(1, "ZONA")
     local StatusLbl = MakeLabel(NewRow(CardZone, 1, 44), "", UDim2.new(1, 0, 1, 0), nil, 9)
     StatusLbl.Font = Enum.Font.Gotham
     StatusLbl.TextWrapped = true
@@ -4507,10 +4957,10 @@ end)()
         MakeLabel(r, text, UDim2.new(1, -8, 1, 0), UDim2.new(0, 6, 0, 0), 10)
         return r
     end
-    SectionHeader(3, "⚙ OTOMATIS — Deteksi Zona")
+    SectionHeader(3, "OTOMATIS — Deteksi Zona")
     local RowDetect = NewRow(CardZone, 4, 24)
-    local DetectBtn = MakeButton(RowDetect, "🔍 DETEKSI ZONA", BTN_TEAL, UDim2.new(0.49, 0, 1, 0))
-    local TapBtn = MakeButton(RowDetect, "👆 KETUK PART", BTN_GRAY, UDim2.new(0.49, 0, 1, 0), UDim2.new(0.51, 0, 0, 0))
+    local DetectBtn = MakeButton(RowDetect, "DETEKSI ZONA", BTN_TEAL, UDim2.new(0.49, 0, 1, 0))
+    local TapBtn = MakeButton(RowDetect, "KETUK PART", BTN_GRAY, UDim2.new(0.49, 0, 1, 0), UDim2.new(0.51, 0, 0, 0))
 
     local RowPath = NewRow(CardZone, 5, 24)
     local PathBox = MakeBox(RowPath, "Path Part zona (boleh Nama[*])", "", UDim2.new(0.64, 0, 1, 0))
@@ -4521,7 +4971,7 @@ end)()
     CandHead.Visible = false
     local CandHolder = NewList(CardZone, 7)
 
-    SectionHeader(8, "✋ MANUAL — Pembuatan Zona")
+    SectionHeader(8, "MANUAL — Pembuatan Zona")
     local RowAB = NewRow(CardZone, 9, 24)
     local BtnA = MakeButton(RowAB, "Set Sudut A", BTN_ORANGE, UDim2.new(0.49, 0, 1, 0))
     local BtnB = MakeButton(RowAB, "Set Sudut B", BTN_ORANGE, UDim2.new(0.49, 0, 1, 0), UDim2.new(0.51, 0, 0, 0))
@@ -4558,9 +5008,9 @@ end)()
     end)
 
     -- ===== KARTU 2: ISI ZONA =====
-    local CardScan = NewCard(2, "📦 ISI ZONA")
+    local CardScan = NewCard(2, "ISI ZONA")
     local RowScan = NewRow(CardScan, 1, 24)
-    local ScanBtn = MakeButton(RowScan, "🔄 SCAN", BTN_TEAL, UDim2.new(0.3, 0, 1, 0))
+    local ScanBtn = MakeButton(RowScan, "SCAN", BTN_TEAL, UDim2.new(0.3, 0, 1, 0))
     local AutoScanToggle = ESP.MakeToggle(RowScan, "Auto Scan (0,5 dtk)", UDim2.new(0.68, 0, 1, 0), UDim2.new(0.32, 0, 0, 0), function(on)
         Z.setAutoScan(on)
     end)
@@ -4574,7 +5024,7 @@ end)()
     local GroupHolder = NewList(CardScan, 4)
 
     -- ===== KARTU 3: PENGAMBILAN & SETOR =====
-    local CardPick = NewCard(3, "🎒 PENGAMBILAN & SETOR")
+    local CardPick = NewCard(3, "PENGAMBILAN & SETOR")
     local METHODS = {
         {"auto", "Auto (deteksi per barang)"},
         {"approach", "Dekati saja"},
@@ -4607,8 +5057,8 @@ end)()
     local PickBox = BoxRow(2, "Jeda setelah ambil (dtk):", "0.4")
     local HoldBox = BoxRow(3, "Lama Tahan E (dtk, 0 = ikuti prompt):", "1.5")
     local RowDep = NewRow(CardPick, 4, 24)
-    local BtnDep = MakeButton(RowDep, "📍 SET TITIK SETOR (posisi sekarang)", BTN_ORANGE, UDim2.new(0.64, 0, 1, 0))
-    local BtnDepClr = MakeButton(RowDep, "✖ Hapus", BTN_GRAY, UDim2.new(0.34, 0, 1, 0), UDim2.new(0.66, 0, 0, 0))
+    local BtnDep = MakeButton(RowDep, "SET TITIK SETOR (posisi sekarang)", BTN_ORANGE, UDim2.new(0.64, 0, 1, 0))
+    local BtnDepClr = MakeButton(RowDep, "Hapus", BTN_GRAY, UDim2.new(0.34, 0, 1, 0), UDim2.new(0.66, 0, 0, 0))
     local DepLbl = MakeLabel(NewRow(CardPick, 5, 14), "Titik setor: belum diatur (barang tidak disetor)", UDim2.new(1, 0, 1, 0), nil, 9)
     DepLbl.Font = Enum.Font.Gotham
     local EveryBox = BoxRow(6, "Setor tiap (barang):", "1")
@@ -4617,8 +5067,8 @@ end)()
     local TriesBox = BoxRow(9, "Maks percobaan per item:", "3")
 
     -- ===== KARTU 4: JALANKAN =====
-    local CardRun = NewCard(4, "▶ AUTO ZONA")
-    local RunBtn = MakeButton(NewRow(CardRun, 1, 30), "▶ MULAI AUTO ZONA", BTN_GREEN, UDim2.new(1, 0, 1, 0), nil, 11)
+    local CardRun = NewCard(4, "AUTO ZONA")
+    local RunBtn = MakeButton(NewRow(CardRun, 1, 30), "MULAI AUTO ZONA", BTN_GREEN, UDim2.new(1, 0, 1, 0), nil, 11)
     local RunLbl = MakeLabel(NewRow(CardRun, 2, 44), "Status: berhenti", UDim2.new(1, 0, 1, 0), nil, 9)
     RunLbl.Font = Enum.Font.Gotham
     RunLbl.TextWrapped = true
@@ -5041,7 +5491,7 @@ end)()
             local sz = p.Size
             local label = string.format("%s (%d×%d×%d)%s%s", p.Name,
                 math.floor(sz.X + 0.5), math.floor(sz.Y + 0.5), math.floor(sz.Z + 0.5),
-                c.inside and "  ✔ di dalam" or "", p.CanCollide and "" or "  · tembus")
+                c.inside and "  [di dalam]" or "", p.CanCollide and "" or "  · tembus")
             local tg = ESP.MakeToggle(CandHolder, label, UDim2.new(1, 0, 0, 22), UDim2.new(0, 0, 0, 0), function(on)
                 TogglePart(p, on)
             end)
@@ -5057,11 +5507,11 @@ end)()
         if detecting then return end
         local root = GetHumanoidRootPart()
         if not root then
-            Flash(DetectBtn, "⚠ Karakter tidak ada", "🔍 DETEKSI ZONA")
+            Flash(DetectBtn, "Karakter tidak ada", "DETEKSI ZONA")
             return
         end
         detecting = true
-        DetectBtn.Text = "🔍 mencari..."
+        DetectBtn.Text = "mencari..."
         task.spawn(function()
             local pos = root.Position
             local params = OverlapParams.new()
@@ -5111,7 +5561,7 @@ end)()
             for i = #list, 15, -1 do list[i] = nil end
             detecting = false
             if hubDestroyed then return end
-            DetectBtn.Text = "🔍 DETEKSI ZONA"
+            DetectBtn.Text = "DETEKSI ZONA"
             ShowCands(list)
         end)
     end
@@ -5125,12 +5575,12 @@ end)()
         if LocalPlayer.Character then params.FilterDescendantsInstances = {LocalPlayer.Character} end
         local res = workspace:Raycast(ray.Origin, ray.Direction * 5000, params)
         if not res or not res.Instance or res.Instance:IsA("Terrain") then
-            Flash(TapBtn, "Tidak kena Part", "👆 KETUK PART: ON")
+            Flash(TapBtn, "Tidak kena Part", "KETUK PART: ON")
             return
         end
         local p = res.Instance
         TogglePart(p, not Z.partSet[p])
-        Flash(TapBtn, (Z.partSet[p] and "＋ " or "－ ") .. p.Name, "👆 KETUK PART: ON")
+        Flash(TapBtn, (Z.partSet[p] and "＋ " or "－ ") .. p.Name, "KETUK PART: ON")
     end
 
     local function StopTap()
@@ -5138,14 +5588,14 @@ end)()
         table.clear(Z.tapConns)
         Z.tapDown, Z.tapPos = nil, nil
         Z.tapOn = false
-        TapBtn.Text = "👆 KETUK PART"
+        TapBtn.Text = "KETUK PART"
         TapBtn.BackgroundColor3 = BTN_GRAY
     end
 
     local function StartTap()
         if Z.tapOn then return end
         Z.tapOn = true
-        TapBtn.Text = "👆 KETUK PART: ON"
+        TapBtn.Text = "KETUK PART: ON"
         TapBtn.BackgroundColor3 = BTN_BLUE
         table.insert(Z.tapConns, UserInputService.InputBegan:Connect(function(input, processed)
             if processed then return end
@@ -5574,7 +6024,7 @@ end)()
             if Z.thread ~= coroutine.running() then pcall(task.cancel, Z.thread) end
             Z.thread = nil
         end
-        RunBtn.Text = "▶ MULAI AUTO ZONA"
+        RunBtn.Text = "MULAI AUTO ZONA"
         RunBtn.BackgroundColor3 = BTN_GREEN
         if was then
             local origin = Z.origin
@@ -5594,11 +6044,11 @@ end)()
     local function StartZone()
         if Z.running then return end
         if not Z.kind or not Defined(Z.kind) then
-            Flash(RunBtn, "⚠ Atur zona dulu", "▶ MULAI AUTO ZONA")
+            Flash(RunBtn, "Atur zona dulu", "MULAI AUTO ZONA")
             return
         end
         if next(Z.sel) == nil then
-            Flash(RunBtn, "⚠ Scan lalu centang jenis barang", "▶ MULAI AUTO ZONA")
+            Flash(RunBtn, "Scan lalu centang jenis barang", "MULAI AUTO ZONA")
             return
         end
         local root = GetHumanoidRootPart()
@@ -5609,7 +6059,7 @@ end)()
         Z.stats = {picked = 0, gone = 0, failed = 0, deposits = 0}
         table.clear(Z.visited)
         Z.running = true
-        RunBtn.Text = "■ BERHENTI"
+        RunBtn.Text = "BERHENTI"
         RunBtn.BackgroundColor3 = BTN_RED
         Z.thread = task.spawn(function()
             local ok, err = xpcall(RunLoop, debug.traceback)
@@ -5650,14 +6100,14 @@ end)()
         if not root then return end
         Z.cA = root.Position
         if Z.cB then SetKind("box") else UpdateStatus() UpdateVisual() end
-        Flash(BtnA, "A ✔", "Set Sudut A")
+        Flash(BtnA, "A OK", "Set Sudut A")
     end)
     BtnB.MouseButton1Click:Connect(function()
         local root = GetHumanoidRootPart()
         if not root then return end
         Z.cB = root.Position
         if Z.cA then SetKind("box") else UpdateStatus() UpdateVisual() end
-        Flash(BtnB, "B ✔", "Set Sudut B")
+        Flash(BtnB, "B OK", "Set Sudut B")
     end)
     HBox.FocusLost:Connect(function()
         local v = tonumber(HBox.Text)
@@ -5671,7 +6121,7 @@ end)()
         if not root then return end
         Z.center = root.Position
         SetKind("sphere")
-        Flash(BtnC, "Tengah ✔", "Set Titik Tengah")
+        Flash(BtnC, "Tengah OK", "Set Titik Tengah")
     end)
     RBox.FocusLost:Connect(function()
         local v = tonumber(RBox.Text)
@@ -5685,7 +6135,7 @@ end)()
         if not root then return end
         Z.poly[#Z.poly + 1] = root.Position
         if #Z.poly >= 3 then SetKind("poly") else UpdateStatus() UpdateVisual() end
-        Flash(BtnPAdd, "Titik " .. #Z.poly .. " ✔", "+ Titik Poligon (posisi sekarang)")
+        Flash(BtnPAdd, "Titik " .. #Z.poly .. " OK", "+ Titik Poligon (posisi sekarang)")
     end)
     BtnPReset.MouseButton1Click:Connect(function()
         table.clear(Z.poly)
@@ -5709,7 +6159,7 @@ end)()
     end)
 
     ScanBtn.MouseButton1Click:Connect(function()
-        if not DoScan() then Flash(ScanBtn, "⚠ Atur zona dulu", "🔄 SCAN") end
+        if not DoScan() then Flash(ScanBtn, "Atur zona dulu", "SCAN") end
     end)
     MaxBox.FocusLost:Connect(function()
         local v = tonumber(MaxBox.Text)
@@ -5792,7 +6242,7 @@ AntiAfkBtn.MouseButton1Click:Connect(function()
     if antiAfkConn then
         antiAfkConn:Disconnect()
         antiAfkConn = nil
-        AntiAfkBtn.Text = "🛡 ANTI‑AFK: OFF"
+        AntiAfkBtn.Text = "ANTI‑AFK: OFF"
         AntiAfkBtn.BackgroundColor3 = UNLOCK_COLOR
     else
         antiAfkConn = LocalPlayer.Idled:Connect(function()
@@ -5802,7 +6252,7 @@ AntiAfkBtn.MouseButton1Click:Connect(function()
                 vu:ClickButton2(Vector2.new())
             end)
         end)
-        AntiAfkBtn.Text = "🛡 ANTI‑AFK: ON"
+        AntiAfkBtn.Text = "ANTI‑AFK: ON"
         AntiAfkBtn.BackgroundColor3 = BTN_GREEN
     end
 end)
@@ -5897,10 +6347,10 @@ end)
 HubLockBtn.MouseButton1Click:Connect(function()
     hubLocked = not hubLocked
     if hubLocked then
-        HubLockBtn.Text = "🔒"
+        HubLockBtn.Text = "K"
         HubLockBtn.BackgroundColor3 = LOCK_COLOR
     else
-        HubLockBtn.Text = "🔓"
+        HubLockBtn.Text = "B"
         HubLockBtn.BackgroundColor3 = Color3.fromRGB(40, 180, 80)
     end
 end)
@@ -6005,3 +6455,6 @@ Track(UserInputService.InputChanged:Connect(function(input)
         ShrimpLogo.Position = UDim2.new(logoStartPos.X.Scale, logoStartPos.X.Offset + delta.X, logoStartPos.Y.Scale, logoStartPos.Y.Offset + delta.Y)
     end
 end))
+
+-- Terapkan bahasa terakhir yang dipilih (setelah seluruh antarmuka selesai dibuat)
+Loc.set(Loc.lang)
