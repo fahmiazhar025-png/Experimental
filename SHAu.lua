@@ -293,6 +293,7 @@ Loc.PHR = {
     {"Tempel kode remote terlebih dahulu", "Paste the remote code first"},
     {"Kode tidak valid: ", "Invalid code: "},
     {"Pindai Lokasi Slot ", "Scan Position Slot "},
+    {"Prompt Instan (tanpa tahan)", "Instant Prompt (no hold)"},
 }
 table.sort(Loc.PHR, function(a, b) return #a[1] > #b[1] end)
 
@@ -1852,7 +1853,7 @@ do
 
 <b>2. Isi Zona</b>: <b>SCAN</b> (atau Auto Scan) menghitung isi per jenis, mis. Box x19, Chest x11. Centang jenis yang mau diambil. Objek lebih besar dari batas stud diabaikan agar peta / dekorasi tidak ikut.
 
-<b>3. Pengambilan &amp; Setor</b>: pilih <b>Cara ambil</b> (Auto, Dekati saja, Tekan E, Tahan E, Prompt, Sentuh, Klik). <b>SET TITIK SETOR</b> = posisi tempat membawa barang kembali; <b>Setor tiap N barang</b>. <b>Tunggu konfirmasi</b> dan <b>Maks percobaan</b>: barang dicek dulu sudah hilang / terangkat sebelum karakter kembali.
+<b>3. Pengambilan &amp; Setor</b>: pilih <b>Cara ambil</b> (Auto, Dekati saja, Tekan E, Tahan E, Prompt, Sentuh, Klik). <b>SET TITIK SETOR</b> = posisi tempat membawa barang kembali; <b>Setor tiap N barang</b>. <b>Tunggu konfirmasi</b> dan <b>Maks percobaan</b>: barang dicek dulu sudah hilang / terangkat sebelum karakter kembali. <b>Prompt Instan</b> membuat semua ProximityPrompt tanpa tahan (HoldDuration = 0), yang sudah ada maupun yang muncul nanti; nilai aslinya disimpan dan dikembalikan saat dimatikan.
 
 <b>4. MULAI AUTO ZONA</b>: teleport ke barang terdekat, ambil, cek, setor, lalu barang berikutnya. Bila zona kosong, karakter menunggu di zona agar barang muncul. Berhenti: kembali ke posisi awal + 2 stud.]=], [=[For areas (zones) where items spawn randomly. Flow: zone, scan, pickup &amp; deposit, then run.
 
@@ -1863,7 +1864,7 @@ do
 
 <b>2. Zone Contents</b>: <b>SCAN</b> (or Auto Scan) counts the contents per type, e.g. Box x19, Chest x11. Tick the types you want to pick up. Objects larger than the stud limit are ignored so the map / decorations are left out.
 
-<b>3. Pickup &amp; Deposit</b>: choose a <b>Pickup method</b> (Auto, Approach only, Press E, Hold E, Prompt, Touch, Click). <b>SET DEPOSIT POINT</b> = the position where items are brought back to; <b>Deposit every N items</b>. <b>Confirmation wait</b> and <b>Max attempts</b>: each item is checked to be gone / lifted before the character goes back.
+<b>3. Pickup &amp; Deposit</b>: choose a <b>Pickup method</b> (Auto, Approach only, Press E, Hold E, Prompt, Touch, Click). <b>SET DEPOSIT POINT</b> = the position where items are brought back to; <b>Deposit every N items</b>. <b>Confirmation wait</b> and <b>Max attempts</b>: each item is checked to be gone / lifted before the character goes back. <b>Instant Prompt</b> makes every ProximityPrompt hold-free (HoldDuration = 0), both existing and newly added ones; the original values are saved and restored when it is turned off.
 
 <b>4. START AUTO ZONE</b>: teleports to the nearest item, picks it up, checks, deposits, then goes to the next one. If the zone is empty, the character waits in the zone so items can spawn. When it stops: back to the starting position + 2 studs.]=], false)
 
@@ -5056,15 +5057,19 @@ end)()
     end
     local PickBox = BoxRow(2, "Jeda setelah ambil (dtk):", "0.4")
     local HoldBox = BoxRow(3, "Lama Tahan E (dtk, 0 = ikuti prompt):", "1.5")
-    local RowDep = NewRow(CardPick, 4, 24)
+    local RowInst = NewRow(CardPick, 4, 22)
+    ESP.MakeToggle(RowInst, "Prompt Instan (tanpa tahan)", UDim2.new(1, 0, 1, 0), UDim2.new(0, 0, 0, 0), function(on)
+        Z.setInstant(on)
+    end)
+    local RowDep = NewRow(CardPick, 5, 24)
     local BtnDep = MakeButton(RowDep, "SET TITIK SETOR (posisi sekarang)", BTN_ORANGE, UDim2.new(0.64, 0, 1, 0))
     local BtnDepClr = MakeButton(RowDep, "Hapus", BTN_GRAY, UDim2.new(0.34, 0, 1, 0), UDim2.new(0.66, 0, 0, 0))
-    local DepLbl = MakeLabel(NewRow(CardPick, 5, 14), "Titik setor: belum diatur (barang tidak disetor)", UDim2.new(1, 0, 1, 0), nil, 9)
+    local DepLbl = MakeLabel(NewRow(CardPick, 6, 14), "Titik setor: belum diatur (barang tidak disetor)", UDim2.new(1, 0, 1, 0), nil, 9)
     DepLbl.Font = Enum.Font.Gotham
-    local EveryBox = BoxRow(6, "Setor tiap (barang):", "1")
-    local WaitBox = BoxRow(7, "Jeda di titik setor (dtk):", "1.5")
-    local ConfirmBox = BoxRow(8, "Tunggu konfirmasi (dtk):", "2.5")
-    local TriesBox = BoxRow(9, "Maks percobaan per item:", "3")
+    local EveryBox = BoxRow(7, "Setor tiap (barang):", "1")
+    local WaitBox = BoxRow(8, "Jeda di titik setor (dtk):", "1.5")
+    local ConfirmBox = BoxRow(9, "Tunggu konfirmasi (dtk):", "2.5")
+    local TriesBox = BoxRow(10, "Maks percobaan per item:", "3")
 
     -- ===== KARTU 4: JALANKAN =====
     local CardRun = NewCard(4, "AUTO ZONA")
@@ -5845,6 +5850,54 @@ end)()
         end)
     end
 
+    -- ===== PROMPT INSTAN =====
+    -- Semua ProximityPrompt di workspace dibuat HoldDuration = 0 (tanpa tahan), baik yang sudah ada maupun yang muncul nanti.
+    -- Nilai ASLI tiap prompt disimpan (kunci lemah: prompt yang dihapus game tidak tertahan di memori) dan
+    -- dikembalikan saat dimatikan atau hub ditutup.
+    local Inst = {on = false, orig = setmetatable({}, {__mode = "k"}), conn = nil, token = 0}
+
+    local function InstApply(prompt)
+        if Inst.orig[prompt] == nil then Inst.orig[prompt] = prompt.HoldDuration end
+        if prompt.HoldDuration ~= 0 then prompt.HoldDuration = 0 end
+    end
+
+    Z.setInstant = function(on)
+        on = on and true or false
+        if on == Inst.on then return end
+        Inst.on = on
+        Z.instant = on
+        Inst.token += 1
+        if on then
+            local token = Inst.token
+            -- prompt yang muncul NANTI
+            Inst.conn = workspace.DescendantAdded:Connect(function(d)
+                if d:IsA("ProximityPrompt") then InstApply(d) end
+            end)
+            -- prompt yang sudah ADA (dipecah agar game tidak membeku)
+            task.spawn(function()
+                local n = 0
+                for _, d in ipairs(workspace:GetDescendants()) do
+                    n += 1
+                    if n % 3000 == 0 then
+                        task.wait()
+                        if Inst.token ~= token or hubDestroyed then return end   -- dimatikan di tengah jalan
+                    end
+                    if d:IsA("ProximityPrompt") then InstApply(d) end
+                end
+            end)
+        else
+            if Inst.conn then
+                Inst.conn:Disconnect()
+                Inst.conn = nil
+            end
+            for prompt, v in pairs(Inst.orig) do          -- kembalikan nilai asli (yang lama maupun yang baru muncul)
+                if prompt.Parent then pcall(function() prompt.HoldDuration = v end) end
+            end
+            table.clear(Inst.orig)
+        end
+    end
+    table.insert(cleanups, function() Z.setInstant(false) end)
+
     local function Pickup(obj)
         local root = GetHumanoidRootPart()
         if not root then return end
@@ -5863,6 +5916,7 @@ end)()
             if secs <= 0 then                            -- 0 = ikuti lama tahan milik prompt
                 secs = prompt and (prompt.HoldDuration + 0.2) or 1.5
             end
+            if Z.instant and prompt then secs = 0.12 end     -- Prompt Instan aktif: tidak perlu menahan lama
             HoldKey(key, secs)
         elseif method == "prompt" then
             if not prompt or not prompt.Enabled then return end
