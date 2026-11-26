@@ -310,6 +310,13 @@ Loc.PHR = {
     {"Cakupan: Zona", "Scope: Zone"},
     {"Cakupan: Seluruh game", "Scope: Whole game"},
     {"Memindai workspace...", "Scanning workspace..."},
+    {"PELINDUNG (ANTI-FLING)", "PROTECTION (ANTI-FLING)"},
+    {"Musuh yang dihapus masih bisa memengaruhimu lewat server. Fitur ini membatalkan lonjakan kecepatan dan menolak gaya / sambungan asing pada karaktermu (di sisimu). HP yang dikurangi server tidak bisa dihentikan dari sini.", "Removed enemies can still affect you through the server. This cancels speed spikes and rejects foreign forces / welds on your character (on your side). HP taken by the server cannot be stopped from here."},
+    {"Anti-Fling (batasi kecepatan)", "Anti-Fling (limit speed)"},
+    {"Kec. maks:", "Max speed:"},
+    {"Putar maks:", "Max spin:"},
+    {"Tolak gaya & sambungan asing", "Reject foreign forces & welds"},
+    {"Dibatalkan: ", "Cancelled: "},
 }
 table.sort(Loc.PHR, function(a, b) return #a[1] > #b[1] end)
 
@@ -1873,6 +1880,8 @@ do
 
 <b>5. Hapus Objek</b> (kartu paling bawah): <b>CARI OBJEK DI ZONA</b>, centang jenis yang mau disingkirkan (musuh NPC ditandai [NPC]), pilih <b>Hapus</b> (bisa dipulihkan) atau <b>Netralkan</b> (tanpa tabrak / sentuh), lalu <b>HAPUS TERPILIH</b> atau nyalakan <b>Auto Hapus</b> untuk musuh yang muncul lagi. <b>Cakupan</b>: Zona, atau Seluruh game (musuh NPC di mana pun, mis. yang datang dari luar zona). Objek dinetralkan dulu (tanpa tabrak / sentuh / lontar), lalu dilepas dan dijaga tetap lepas; bagian yang tersambung ke objek ikut dinetralkan. Hanya berlaku di sisi kamu (lokal): kerusakan yang dihitung server tidak bisa dihentikan dari sini. <b>PULIHKAN SEMUA</b> mengembalikan, dan hub yang ditutup juga mengembalikan.
 
+<b>6. Pelindung (Anti-Fling)</b>: efek dari musuh yang dihapus masih bisa datang lewat server. <b>Anti-Fling</b> membatalkan lonjakan kecepatan / putaran karaktermu di atas batas <b>Kec. maks</b> dan <b>Putar maks</b> (naikkan bila terlalu sering memotong gerakan normal, mis. di kendaraan). <b>Tolak gaya &amp; sambungan asing</b> mematikan gaya (BodyVelocity, LinearVelocity, VectorForce, dll.) dan weld dari benda luar yang dipasang ke karaktermu; dipulihkan saat dimatikan. Kerusakan HP yang dihitung server tidak bisa dihentikan.
+
 <b>4. MULAI AUTO ZONA</b>: teleport ke barang terdekat, ambil, cek, setor, lalu barang berikutnya. Bila zona kosong, karakter menunggu di zona agar barang muncul. Berhenti: kembali ke posisi awal + 2 stud.]=], [=[For areas (zones) where items spawn randomly. Flow: zone, scan, pickup &amp; deposit, then run.
 
 <b>1. Set the zone</b> (the PART / BOX / SPHERE / POLYGON buttons choose the saved zone that is active)
@@ -1885,6 +1894,8 @@ do
 <b>3. Pickup &amp; Deposit</b>: choose a <b>Pickup method</b> (Auto, Approach only, Press E, Hold E, Prompt, Touch, Click). <b>SET DEPOSIT POINT</b> = the position where items are brought back to; <b>Deposit every N items</b>. <b>Confirmation wait</b> and <b>Max attempts</b>: each item is checked to be gone / lifted before the character goes back. <b>Instant Prompt</b> makes every ProximityPrompt hold-free (HoldDuration = 0), both existing and newly added ones; the original values are saved and restored when it is turned off.
 
 <b>5. Remove Objects</b> (bottom card): <b>FIND OBJECTS IN ZONE</b>, tick the types to get rid of (NPC enemies are marked [NPC]), choose <b>Remove</b> (restorable) or <b>Neutralize</b> (no collision / touch), then <b>REMOVE SELECTED</b> or turn on <b>Auto Remove</b> for enemies that respawn. <b>Scope</b>: Zone, or Whole game (NPC enemies anywhere, e.g. ones coming from outside the zone). Objects are neutralized first (no collision / touch / fling), then detached and kept detached; parts connected to the object are neutralized too. Only applies on your side (local): damage computed by the server cannot be stopped from here. <b>RESTORE ALL</b> brings everything back, and closing the hub restores it too.
+
+<b>6. Protection (Anti-Fling)</b>: effects from removed enemies can still arrive through the server. <b>Anti-Fling</b> cancels speed / spin spikes on your character above <b>Max speed</b> and <b>Max spin</b> (raise them if it cuts normal movement too often, e.g. in vehicles). <b>Reject foreign forces &amp; welds</b> disables forces (BodyVelocity, LinearVelocity, VectorForce, etc.) and welds to outside objects attached to your character; restored when turned off. HP damage computed by the server cannot be stopped.
 
 <b>4. START AUTO ZONE</b>: teleports to the nearest item, picks it up, checks, deposits, then goes to the next one. If the zone is empty, the character waits in the zone so items can spawn. When it stops: back to the starting position + 2 studs.]=], false)
 
@@ -6278,6 +6289,174 @@ end)()
             Rm.conn = nil
         end
         RmRestore()                                      -- hub ditutup: kembalikan semuanya
+    end)
+
+    -- ==================================================
+    -- PELINDUNG (ANTI-FLING)
+    -- Objek yang dihapus di sisimu masih bisa memengaruhimu lewat SERVER. Dua jalur yang bisa dilawan dari sisi pemain:
+    --   1) Lonjakan kecepatan: karaktermu disimulasikan di komputermu, jadi kecepatan linear / putar yang melewati batas
+    --      dibatalkan tiap frame (nol-kan) sebelum sempat melontarkanmu.
+    --   2) Gaya / sambungan asing yang dipasang ke karaktermu (BodyVelocity, LinearVelocity, VectorForce, Align*, Torque, Weld ke
+    --      benda luar): dimatikan (nilai asli disimpan) dan DIPULIHKAN saat dinonaktifkan atau hub ditutup.
+    -- Tidak bisa dilawan dari sini: HP yang dikurangi oleh server (kerusakan / kill yang dihitung server).
+    -- Anti kebocoran: satu koneksi Heartbeat hanya saat Anti-Fling ON; satu hook karakter hanya saat Tolak Gaya ON;
+    -- catatan dibatasi 100 objek.
+    -- ==================================================
+    local Af = {maxSpeed = 120, maxSpin = 40, conn = nil, hook = nil, spawnConn = nil, recs = {}, order = {}, cancelled = 0, nextLbl = 0}
+    local AF_CLASSES = {"BodyMover", "LinearVelocity", "VectorForce", "AngularVelocity", "AlignPosition", "AlignOrientation", "Torque", "LineForce"}
+
+    local CardAf = NewCard(6, "PELINDUNG (ANTI-FLING)")
+    local AfNote = MakeLabel(NewRow(CardAf, 1, 62), "Musuh yang dihapus masih bisa memengaruhimu lewat server. Fitur ini membatalkan lonjakan kecepatan dan menolak gaya / sambungan asing pada karaktermu (di sisimu). HP yang dikurangi server tidak bisa dihentikan dari sini.", UDim2.new(1, 0, 1, 0), nil, 9)
+    AfNote.Font = Enum.Font.Gotham
+    AfNote.TextWrapped = true
+    AfNote.TextYAlignment = Enum.TextYAlignment.Top
+    local AfSetSpeed, AfSetForces                         -- diisi di bawah
+    ESP.MakeToggle(NewRow(CardAf, 2, 22), "Anti-Fling (batasi kecepatan)", UDim2.new(1, 0, 1, 0), UDim2.new(0, 0, 0, 0), function(on)
+        AfSetSpeed(on)
+    end)
+    local RowAfNum = NewRow(CardAf, 3, 22)
+    MakeLabel(RowAfNum, "Kec. maks:", UDim2.new(0.2, 0, 1, 0), nil, 9)
+    local AfSpeedBox = MakeBox(RowAfNum, "120", "120", UDim2.new(0.22, 0, 1, 0), UDim2.new(0.21, 0, 0, 0))
+    MakeLabel(RowAfNum, "Putar maks:", UDim2.new(0.22, 0, 1, 0), UDim2.new(0.47, 0, 0, 0), 9)
+    local AfSpinBox = MakeBox(RowAfNum, "40", "40", UDim2.new(0.22, 0, 1, 0), UDim2.new(0.7, 0, 0, 0))
+    ESP.MakeToggle(NewRow(CardAf, 4, 22), "Tolak gaya & sambungan asing", UDim2.new(1, 0, 1, 0), UDim2.new(0, 0, 0, 0), function(on)
+        AfSetForces(on)
+    end)
+    local AfInfo = MakeLabel(NewRow(CardAf, 5, 14), "Dibatalkan: 0", UDim2.new(1, 0, 1, 0), nil, 9)
+    AfInfo.Font = Enum.Font.Gotham
+
+    AfSpeedBox.FocusLost:Connect(function()
+        local v = tonumber(AfSpeedBox.Text)
+        if v then Af.maxSpeed = math.max(v, 20) end
+        AfSpeedBox.Text = Fmt(Af.maxSpeed)
+    end)
+    AfSpinBox.FocusLost:Connect(function()
+        local v = tonumber(AfSpinBox.Text)
+        if v then Af.maxSpin = math.max(v, 5) end
+        AfSpinBox.Text = Fmt(Af.maxSpin)
+    end)
+
+    local function AfStep()
+        local root = GetHumanoidRootPart()
+        if not root then return end
+        local hit = false
+        if root.AssemblyLinearVelocity.Magnitude > Af.maxSpeed then
+            root.AssemblyLinearVelocity = Vector3.zero
+            hit = true
+        end
+        if root.AssemblyAngularVelocity.Magnitude > Af.maxSpin then
+            root.AssemblyAngularVelocity = Vector3.zero
+            hit = true
+        end
+        if hit then
+            Af.cancelled += 1
+            local now = os.clock()
+            if now >= Af.nextLbl then
+                Af.nextLbl = now + 0.25
+                AfInfo.Text = "Dibatalkan: " .. Af.cancelled
+            end
+        end
+    end
+
+    local function AfIsForce(inst)
+        for _, c in ipairs(AF_CLASSES) do
+            if inst:IsA(c) then return true end
+        end
+        return false
+    end
+
+    local function AfForeignWeld(inst, char)             -- sambungan antara karaktermu dan benda DI LUAR karaktermu
+        if not (inst:IsA("WeldConstraint") or inst:IsA("Weld") or inst:IsA("ManualWeld")) then return false end
+        local a, b = inst.Part0, inst.Part1
+        if not (a and b) then return false end
+        return not (a:IsDescendantOf(char) and b:IsDescendantOf(char))
+    end
+
+    local function AfNeutralize(inst, char)
+        if Af.recs[inst] then return end
+        local rec
+        if AfIsForce(inst) then
+            if inst:IsA("BodyMover") then
+                rec = {parent = inst.Parent}
+                inst.Parent = nil
+            else
+                rec = {enabled = inst.Enabled}
+                inst.Enabled = false
+            end
+        elseif AfForeignWeld(inst, char) then
+            rec = {enabled = inst.Enabled}
+            inst.Enabled = false
+        end
+        if rec then
+            Af.recs[inst] = rec
+            Af.order[#Af.order + 1] = inst
+            if #Af.order > 100 then Af.recs[table.remove(Af.order, 1)] = nil end   -- batas memori
+        end
+    end
+
+    local function AfRestore()
+        for _, inst in ipairs(Af.order) do
+            local rec = Af.recs[inst]
+            if rec then
+                pcall(function()
+                    if rec.parent ~= nil then
+                        inst.Parent = rec.parent
+                    elseif rec.enabled ~= nil then
+                        inst.Enabled = rec.enabled
+                    end
+                end)
+            end
+        end
+        Af.recs, Af.order = {}, {}
+    end
+
+    local function AfHook(char)
+        if Af.hook then
+            Af.hook:Disconnect()
+            Af.hook = nil
+        end
+        if not char then return end
+        Af.hook = char.DescendantAdded:Connect(function(inst)
+            task.defer(function()                         -- ditunda: Parent terkunci saat event sedang berjalan
+                if Af.spawnConn and inst.Parent then pcall(AfNeutralize, inst, char) end
+            end)
+        end)
+        for _, d in ipairs(char:GetDescendants()) do      -- yang sudah terpasang sebelum dinyalakan
+            pcall(AfNeutralize, d, char)
+        end
+    end
+
+    AfSetSpeed = function(on)
+        if on and not Af.conn then
+            Af.conn = RunService.Heartbeat:Connect(AfStep)
+        elseif not on and Af.conn then
+            Af.conn:Disconnect()
+            Af.conn = nil
+        end
+    end
+
+    AfSetForces = function(on)
+        if on then
+            if not Af.spawnConn then
+                Af.spawnConn = LocalPlayer.CharacterAdded:Connect(function(c) AfHook(c) end)
+            end
+            AfHook(LocalPlayer.Character)
+        else
+            if Af.spawnConn then
+                Af.spawnConn:Disconnect()
+                Af.spawnConn = nil
+            end
+            if Af.hook then
+                Af.hook:Disconnect()
+                Af.hook = nil
+            end
+            AfRestore()
+        end
+    end
+
+    table.insert(cleanups, function()
+        AfSetSpeed(false)
+        AfSetForces(false)
     end)
 
     -- ===== PROMPT INSTAN =====
