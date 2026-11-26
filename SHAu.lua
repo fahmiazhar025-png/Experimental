@@ -307,6 +307,9 @@ Loc.PHR = {
     {"PULIHKAN SEMUA", "RESTORE ALL"},
     {"Auto Hapus (terus-menerus)", "Auto Remove (continuous)"},
     {"Dihapus / dinetralkan: ", "Removed / neutralized: "},
+    {"Cakupan: Zona", "Scope: Zone"},
+    {"Cakupan: Seluruh game", "Scope: Whole game"},
+    {"Memindai workspace...", "Scanning workspace..."},
 }
 table.sort(Loc.PHR, function(a, b) return #a[1] > #b[1] end)
 
@@ -1868,7 +1871,7 @@ do
 
 <b>3. Pengambilan &amp; Setor</b>: pilih <b>Cara ambil</b> (Auto, Dekati saja, Tekan E, Tahan E, Prompt, Sentuh, Klik). <b>SET TITIK SETOR</b> = posisi tempat membawa barang kembali; <b>Setor tiap N barang</b>. <b>Tunggu konfirmasi</b> dan <b>Maks percobaan</b>: barang dicek dulu sudah hilang / terangkat sebelum karakter kembali. <b>Prompt Instan</b> membuat semua ProximityPrompt tanpa tahan (HoldDuration = 0), yang sudah ada maupun yang muncul nanti; nilai aslinya disimpan dan dikembalikan saat dimatikan.
 
-<b>5. Hapus Objek</b> (kartu paling bawah): <b>CARI OBJEK DI ZONA</b>, centang jenis yang mau disingkirkan (musuh NPC ditandai [NPC]), pilih <b>Hapus</b> (bisa dipulihkan) atau <b>Netralkan</b> (tanpa tabrak / sentuh), lalu <b>HAPUS TERPILIH</b> atau nyalakan <b>Auto Hapus</b> untuk musuh yang muncul lagi. Hanya berlaku di sisi kamu (lokal); <b>PULIHKAN SEMUA</b> mengembalikan, dan hub yang ditutup juga mengembalikan.
+<b>5. Hapus Objek</b> (kartu paling bawah): <b>CARI OBJEK DI ZONA</b>, centang jenis yang mau disingkirkan (musuh NPC ditandai [NPC]), pilih <b>Hapus</b> (bisa dipulihkan) atau <b>Netralkan</b> (tanpa tabrak / sentuh), lalu <b>HAPUS TERPILIH</b> atau nyalakan <b>Auto Hapus</b> untuk musuh yang muncul lagi. <b>Cakupan</b>: Zona, atau Seluruh game (musuh NPC di mana pun, mis. yang datang dari luar zona). Objek dinetralkan dulu (tanpa tabrak / sentuh / lontar), lalu dilepas dan dijaga tetap lepas; bagian yang tersambung ke objek ikut dinetralkan. Hanya berlaku di sisi kamu (lokal): kerusakan yang dihitung server tidak bisa dihentikan dari sini. <b>PULIHKAN SEMUA</b> mengembalikan, dan hub yang ditutup juga mengembalikan.
 
 <b>4. MULAI AUTO ZONA</b>: teleport ke barang terdekat, ambil, cek, setor, lalu barang berikutnya. Bila zona kosong, karakter menunggu di zona agar barang muncul. Berhenti: kembali ke posisi awal + 2 stud.]=], [=[For areas (zones) where items spawn randomly. Flow: zone, scan, pickup &amp; deposit, then run.
 
@@ -1881,7 +1884,7 @@ do
 
 <b>3. Pickup &amp; Deposit</b>: choose a <b>Pickup method</b> (Auto, Approach only, Press E, Hold E, Prompt, Touch, Click). <b>SET DEPOSIT POINT</b> = the position where items are brought back to; <b>Deposit every N items</b>. <b>Confirmation wait</b> and <b>Max attempts</b>: each item is checked to be gone / lifted before the character goes back. <b>Instant Prompt</b> makes every ProximityPrompt hold-free (HoldDuration = 0), both existing and newly added ones; the original values are saved and restored when it is turned off.
 
-<b>5. Remove Objects</b> (bottom card): <b>FIND OBJECTS IN ZONE</b>, tick the types to get rid of (NPC enemies are marked [NPC]), choose <b>Remove</b> (restorable) or <b>Neutralize</b> (no collision / touch), then <b>REMOVE SELECTED</b> or turn on <b>Auto Remove</b> for enemies that respawn. Only applies on your side (local); <b>RESTORE ALL</b> brings everything back, and closing the hub restores it too.
+<b>5. Remove Objects</b> (bottom card): <b>FIND OBJECTS IN ZONE</b>, tick the types to get rid of (NPC enemies are marked [NPC]), choose <b>Remove</b> (restorable) or <b>Neutralize</b> (no collision / touch), then <b>REMOVE SELECTED</b> or turn on <b>Auto Remove</b> for enemies that respawn. <b>Scope</b>: Zone, or Whole game (NPC enemies anywhere, e.g. ones coming from outside the zone). Objects are neutralized first (no collision / touch / fling), then detached and kept detached; parts connected to the object are neutralized too. Only applies on your side (local): damage computed by the server cannot be stopped from here. <b>RESTORE ALL</b> brings everything back, and closing the hub restores it too.
 
 <b>4. START AUTO ZONE</b>: teleports to the nearest item, picks it up, checks, deposits, then goes to the next one. If the zone is empty, the character waits in the zone so items can spawn. When it stops: back to the starting position + 2 studs.]=], false)
 
@@ -5868,13 +5871,20 @@ end)()
     end
 
     -- ==================================================
-    -- HAPUS / NETRALKAN OBJEK DI ZONA (musuh NPC, bot, barang)
+    -- HAPUS / NETRALKAN OBJEK (musuh NPC, bot, barang) - versi menyeluruh
     -- Semua perubahan hanya di SISI KAMU (lokal): server tidak ikut berubah, dan karakter pemain tidak pernah disentuh.
-    --   Hapus     : objek dilepas dari workspace secara lokal; induk aslinya disimpan sehingga bisa DIPULIHKAN.
     --   Netralkan : CanCollide / CanTouch / CanQuery dimatikan (nilai asli disimpan) -> tidak menabrak / menyentuh / melontarkan kamu.
-    -- Anti kebocoran: satu thread hanya saat Auto Hapus ON; catatan dibatasi 400 objek; semuanya dipulihkan saat hub ditutup.
+    --   Hapus     : NETRALKAN dulu, lalu objek dilepas dari workspace dan DIJAGA tetap lepas (bila game memasangnya lagi,
+    --               langsung dilepas kembali; kalaupun terpasang sebentar, bagiannya sudah tanpa tabrak/sentuh). Bisa DIPULIHKAN.
+    --   Bagian yang tersambung (weld / sendi) ke objek tapi berada di luar modelnya (mis. hitbox lepas) ikut dinetralkan
+    --   (kecuali bagian anchored dan karakter pemain, supaya peta tidak berlubang).
+    -- Cakupan: Zona, atau Seluruh game (musuh NPC di mana pun di workspace, mis. yang datang dari luar zona).
+    -- Pemindaian dalam (GetDescendants) juga menemukan bagian ber-CanQuery=false yang tak terlihat oleh pencarian ruang.
+    -- Anti kebocoran: satu thread + satu koneksi hanya saat Auto Hapus ON; catatan dibatasi 400 objek;
+    -- semuanya dipulihkan saat hub ditutup.
     -- ==================================================
-    local Rm = {mode = "remove", sel = {}, rows = {}, done = {}, order = {}, auto = false, thread = nil}
+    local Rm = {mode = "remove", scope = "zone", sel = {}, rows = {}, done = {}, order = {}, auto = false,
+        thread = nil, conn = nil, queue = {}, busy = false}
     local RM_CAP = 400
 
     local CardRem = NewCard(5, "HAPUS OBJEK DI ZONA")
@@ -5898,22 +5908,46 @@ end)()
     RmModeToggle("neutral", "Netralkan (tanpa tabrak)", 0.51)
     rmToggles.remove.set(true)
 
-    local RmFind = MakeButton(NewRow(CardRem, 3, 24), "CARI OBJEK DI ZONA", BTN_TEAL, UDim2.new(1, 0, 1, 0))
-    local RmInfo = MakeLabel(NewRow(CardRem, 4, 26), "", UDim2.new(1, 0, 1, 0), nil, 9)
+    local RowRmScope = NewRow(CardRem, 3, 22)
+    local rmScope = {}
+    local function RmScopeToggle(key, text, x)
+        rmScope[key] = ESP.MakeToggle(RowRmScope, text, UDim2.new(0.49, 0, 1, 0), UDim2.new(x, 0, 0, 0), function(on)
+            if not on then return false end
+            Rm.scope = key
+            for k, t in pairs(rmScope) do
+                if k ~= key then t.set(false) end
+            end
+        end)
+    end
+    RmScopeToggle("zone", "Cakupan: Zona", 0)
+    RmScopeToggle("all", "Cakupan: Seluruh game", 0.51)
+    rmScope.zone.set(true)
+
+    local RmFind = MakeButton(NewRow(CardRem, 4, 24), "CARI OBJEK DI ZONA", BTN_TEAL, UDim2.new(1, 0, 1, 0))
+    local RmInfo = MakeLabel(NewRow(CardRem, 5, 26), "", UDim2.new(1, 0, 1, 0), nil, 9)
     RmInfo.Font = Enum.Font.Gotham
     RmInfo.TextWrapped = true
     RmInfo.TextYAlignment = Enum.TextYAlignment.Top
-    local RmHolder = NewList(CardRem, 5)
-    local RowRmAct = NewRow(CardRem, 6, 24)
+    local RmHolder = NewList(CardRem, 6)
+    local RowRmAct = NewRow(CardRem, 7, 24)
     local RmDo = MakeButton(RowRmAct, "HAPUS TERPILIH", BTN_RED, UDim2.new(0.49, 0, 1, 0))
     local RmUndo = MakeButton(RowRmAct, "PULIHKAN SEMUA", BTN_GRAY, UDim2.new(0.49, 0, 1, 0), UDim2.new(0.51, 0, 0, 0))
-    local RowRmAuto = NewRow(CardRem, 7, 22)
-    local RmStat = MakeLabel(NewRow(CardRem, 8, 14), "Dihapus / dinetralkan: 0", UDim2.new(1, 0, 1, 0), nil, 9)
+    local RowRmAuto = NewRow(CardRem, 8, 22)
+    local RmStat = MakeLabel(NewRow(CardRem, 9, 14), "Dihapus / dinetralkan: 0", UDim2.new(1, 0, 1, 0), nil, 9)
     RmStat.Font = Enum.Font.Gotham
 
     local function RmIsPlayerModel(m)
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr.Character == m then return true end
+        end
+        return false
+    end
+
+    local function RmInPlayer(inst)                      -- bagian dari karakter pemain mana pun?
+        local a = inst
+        while a and a ~= workspace and a ~= game do
+            if a:IsA("Model") and RmIsPlayerModel(a) then return true end
+            a = a.Parent
         end
         return false
     end
@@ -5937,31 +5971,73 @@ end)()
         return node, false
     end
 
-    local function RmBuild(parts)
-        local groups, seen = {}, {}
+    local function RmKey(unit, npc)
+        local name = Base(unit.Name)
+        if name == "" then name = unit.Name end
+        return (npc and "[NPC] " or "") .. name
+    end
+
+    local function RmAdd(groups, seen, unit, npc)
+        if not unit or seen[unit] or Rm.done[unit] or unit == workspace or unit:IsA("Terrain") then return end
+        seen[unit] = true
+        local ok = npc          -- musuh NPC tidak dibatasi ukuran; barang dibatasi agar bagian peta besar tidak ikut
+        if not ok then
+            local size = unit:IsA("Model") and unit:GetExtentsSize() or unit.Size
+            ok = math.max(size.X, size.Y, size.Z) <= Z.maxSize
+        end
+        if not ok then return end
+        local key = RmKey(unit, npc)
+        local g = groups[key]
+        if not g then
+            g = {count = 0, list = {}}
+            groups[key] = g
+        end
+        g.count += 1
+        g.list[#g.list + 1] = unit
+    end
+
+    -- Pencarian ruang (cepat): bagian yang ada di dalam zona
+    local function RmBuild(parts, groups, seen)
         for _, p in ipairs(parts) do
             local unit, npc = RmUnitOf(p)
-            if unit and not seen[unit] and not Rm.done[unit] and unit ~= workspace and not unit:IsA("Terrain") then
-                seen[unit] = true
-                local ok = npc          -- musuh NPC tidak dibatasi ukuran; barang dibatasi agar bagian peta besar tidak ikut
-                if not ok then
-                    local size = unit:IsA("Model") and unit:GetExtentsSize() or unit.Size
-                    ok = math.max(size.X, size.Y, size.Z) <= Z.maxSize
-                end
-                if ok then
-                    local name = Base(unit.Name)
-                    if name == "" then name = unit.Name end
-                    local key = (npc and "[NPC] " or "") .. name
-                    local g = groups[key]
-                    if not g then
-                        g = {count = 0, list = {}}
-                        groups[key] = g
+            RmAdd(groups, seen, unit, npc)
+        end
+    end
+
+    -- Pemindaian dalam (lebih lambat, dipecah agar tidak membeku): menemukan musuh NPC di mana pun (cakupan Seluruh game)
+    -- dan bagian ber-CanQuery=false di dalam zona yang tak terlihat oleh pencarian ruang
+    local function RmDeepScan(groups, seen)
+        local n = 0
+        for _, d in ipairs(workspace:GetDescendants()) do
+            n += 1
+            if n % 3000 == 0 then
+                task.wait()
+                if hubDestroyed then return end
+            end
+            if d:IsA("Model") then
+                if d ~= workspace and d:FindFirstChildOfClass("Humanoid") and not RmIsPlayerModel(d) then
+                    local inside = Rm.scope == "all"
+                    if not inside then
+                        local ok, cf = pcall(function() return d:GetPivot() end)
+                        inside = ok and Contains(cf.Position)
                     end
-                    g.count += 1
-                    g.list[#g.list + 1] = unit
+                    if inside then RmAdd(groups, seen, d, true) end
                 end
+            elseif Rm.scope == "zone" and d:IsA("BasePart") and not d.CanQuery and not Z.partSet[d] and Contains(d.Position) then
+                local unit, npc = RmUnitOf(d)
+                RmAdd(groups, seen, unit, npc)
             end
         end
+    end
+
+    local function RmCollect(deep)
+        local groups, seen = {}, {}
+        if Rm.scope == "zone" then
+            local parts = GatherParts()
+            if not parts then return nil end
+            RmBuild(parts, groups, seen)
+        end
+        if deep or Rm.scope == "all" then RmDeepScan(groups, seen) end
         return groups
     end
 
@@ -5969,30 +6045,66 @@ end)()
         RmStat.Text = "Dihapus / dinetralkan: " .. #Rm.order
     end
 
+    local function RmFixPart(rec, part)
+        if rec.props[part] then return end
+        rec.props[part] = {part.CanCollide, part.CanTouch, part.CanQuery}
+        part.CanCollide = false
+        part.CanTouch = false
+        part.CanQuery = false
+    end
+
+    local function RmNeutralize(unit, rec)
+        if unit:IsA("BasePart") then RmFixPart(rec, unit) end
+        for _, d in ipairs(unit:GetDescendants()) do
+            if d:IsA("BasePart") then RmFixPart(rec, d) end
+        end
+        -- bagian yang tersambung ke objek tetapi di luar modelnya (mis. hitbox lepas); anchored & karakter pemain dilewati
+        local seed = unit:IsA("BasePart") and unit
+            or (unit:IsA("Model") and (unit.PrimaryPart or unit:FindFirstChildWhichIsA("BasePart", true)))
+        if seed then
+            local ok, linked = pcall(function() return seed:GetConnectedParts(true) end)
+            if ok then
+                for i = 1, math.min(#linked, 200) do
+                    local p = linked[i]
+                    if not p:IsDescendantOf(unit) and not p.Anchored and not RmInPlayer(p) then
+                        RmFixPart(rec, p)
+                    end
+                end
+            end
+        end
+    end
+
+    local function RmForget(unit)
+        local rec = Rm.done[unit]
+        if rec and rec.guard then
+            rec.guard:Disconnect()
+            rec.guard = nil
+        end
+        Rm.done[unit] = nil
+    end
+
     local function RmProcess(unit)
         if Rm.done[unit] or not unit:IsDescendantOf(workspace) then return end
-        local rec = {mode = Rm.mode}
+        local rec = {mode = Rm.mode, props = {}}
+        RmNeutralize(unit, rec)                          -- selalu dinetralkan dulu
         if Rm.mode == "remove" then
             rec.parent = unit.Parent
-            unit.Parent = nil                           -- lepas secara lokal (bisa dikembalikan)
-        else
-            rec.props = {}
-            local function Fix(part)
-                rec.props[part] = {part.CanCollide, part.CanTouch, part.CanQuery}
-                part.CanCollide = false
-                part.CanTouch = false
-                part.CanQuery = false
-            end
-            if unit:IsA("BasePart") then Fix(unit) end
-            for _, d in ipairs(unit:GetDescendants()) do
-                if d:IsA("BasePart") then Fix(d) end
-            end
+            unit.Parent = nil                            -- lepas secara lokal
+            -- penjaga: bila game memasangnya lagi (mis. dipindah / dikirim ulang server), lepas kembali
+            rec.guard = unit:GetPropertyChangedSignal("Parent"):Connect(function()
+                if unit.Parent ~= nil and Rm.done[unit] == rec and not rec.restoring then
+                    task.defer(function()
+                        if Rm.done[unit] == rec and not rec.restoring and unit.Parent ~= nil then
+                            unit.Parent = nil
+                        end
+                    end)
+                end
+            end)
         end
         Rm.done[unit] = rec
         Rm.order[#Rm.order + 1] = unit
-        if #Rm.order > RM_CAP then                      -- batas memori: yang paling lama tidak bisa dipulihkan lagi
-            local old = table.remove(Rm.order, 1)
-            Rm.done[old] = nil
+        if #Rm.order > RM_CAP then                       -- batas memori: yang paling lama tidak bisa dipulihkan lagi
+            RmForget(table.remove(Rm.order, 1))
         end
     end
 
@@ -6000,20 +6112,20 @@ end)()
         for _, unit in ipairs(Rm.order) do
             local rec = Rm.done[unit]
             if rec then
-                if rec.mode == "remove" then
-                    if rec.parent and rec.parent:IsDescendantOf(game) then
-                        pcall(function() unit.Parent = rec.parent end)
-                    end
-                else
-                    for part, v in pairs(rec.props) do
-                        if part.Parent then
-                            pcall(function()
-                                part.CanCollide = v[1]
-                                part.CanTouch = v[2]
-                                part.CanQuery = v[3]
-                            end)
-                        end
-                    end
+                rec.restoring = true
+                if rec.guard then
+                    rec.guard:Disconnect()
+                    rec.guard = nil
+                end
+                if rec.mode == "remove" and rec.parent and rec.parent:IsDescendantOf(game) then
+                    pcall(function() unit.Parent = rec.parent end)
+                end
+                for part, v in pairs(rec.props) do
+                    pcall(function()
+                        part.CanCollide = v[1]
+                        part.CanTouch = v[2]
+                        part.CanQuery = v[3]
+                    end)
                 end
             end
         end
@@ -6021,11 +6133,10 @@ end)()
         RmUpdateStat()
     end
 
-    -- Terapkan ke jenis yang dicentang (memindai zona saat ini)
-    local function RmApplySelected()
-        local parts = GatherParts()
-        if not parts then return 0 end
-        local groups = RmBuild(parts)
+    -- Terapkan ke jenis yang dicentang
+    local function RmApplySelected(deep)
+        local groups = RmCollect(deep)
+        if not groups then return 0 end
         local n = 0
         for key, g in pairs(groups) do
             if Rm.sel[key] then
@@ -6041,12 +6152,16 @@ end)()
 
     local RM_ROWS = 20
     local function RmRefresh()
-        local parts = GatherParts()
-        if not parts then
+        if Rm.busy then return end
+        Rm.busy = true
+        RmInfo.Text = "Memindai workspace..."
+        local groups = RmCollect(true)
+        Rm.busy = false
+        if hubDestroyed then return end
+        if not groups then
             RmInfo.Text = "Atur zona dulu, lalu tekan CARI OBJEK."
             return
         end
-        local groups = RmBuild(parts)
         local keys, total = {}, 0
         for k, g in pairs(groups) do
             keys[#keys + 1] = k
@@ -6086,13 +6201,59 @@ end)()
         end
     end
 
+    -- objek yang muncul NANTI (respawn / streaming): dicek lewat antrean kecil
+    local function RmHandleNew(d)
+        if not d:IsDescendantOf(workspace) then return end
+        local unit, npc
+        if d:IsA("Model") then
+            if d:FindFirstChildOfClass("Humanoid") and not RmIsPlayerModel(d) then unit, npc = d, true end
+        elseif d:IsA("BasePart") then
+            unit, npc = RmUnitOf(d)
+        end
+        if not unit or Rm.done[unit] or not Rm.sel[RmKey(unit, npc)] then return end
+        local inside = (Rm.scope == "all" and npc)
+        if not inside then
+            local pos = ItemPos(unit)
+            inside = pos ~= nil and Contains(pos)
+        end
+        if inside then RmProcess(unit) end
+    end
+
     local function RmStartAuto()
         if Rm.thread then return end
-        Rm.thread = task.spawn(function()
-            while Rm.auto and not hubDestroyed do
-                if next(Rm.sel) ~= nil then RmApplySelected() end
-                task.wait(0.4)
+        Rm.queue = {}
+        Rm.conn = workspace.DescendantAdded:Connect(function(d)
+            if d:IsA("Model") or d:IsA("BasePart") then
+                local q = Rm.queue
+                if #q < 500 then q[#q + 1] = {d, os.clock() + 0.25} end
             end
+        end)
+        Rm.thread = task.spawn(function()
+            if next(Rm.sel) ~= nil then RmApplySelected(true) end        -- sekali pindai dalam saat dinyalakan
+            local nextZone = 0
+            while Rm.auto and not hubDestroyed do
+                if next(Rm.sel) ~= nil then
+                    local now, keep = os.clock(), {}
+                    for _, e in ipairs(Rm.queue) do
+                        if now >= e[2] then
+                            pcall(RmHandleNew, e[1])
+                        else
+                            keep[#keep + 1] = e
+                        end
+                    end
+                    Rm.queue = keep
+                    if Rm.scope == "zone" and now >= nextZone then       -- penyisiran zona berkala
+                        nextZone = now + 0.5
+                        RmApplySelected(false)
+                    end
+                end
+                task.wait(0.2)
+            end
+            if Rm.conn then
+                Rm.conn:Disconnect()
+                Rm.conn = nil
+            end
+            Rm.queue = {}
             Rm.thread = nil
         end)
     end
@@ -6103,7 +6264,7 @@ end)()
     end)
     RmFind.MouseButton1Click:Connect(RmRefresh)
     RmDo.MouseButton1Click:Connect(function()
-        RmApplySelected()
+        RmApplySelected(true)
         RmRefresh()
     end)
     RmUndo.MouseButton1Click:Connect(function()
@@ -6112,6 +6273,10 @@ end)()
     end)
     table.insert(cleanups, function()
         Rm.auto = false
+        if Rm.conn then
+            Rm.conn:Disconnect()
+            Rm.conn = nil
+        end
         RmRestore()                                      -- hub ditutup: kembalikan semuanya
     end)
 
