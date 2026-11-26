@@ -294,6 +294,19 @@ Loc.PHR = {
     {"Kode tidak valid: ", "Invalid code: "},
     {"Pindai Lokasi Slot ", "Scan Position Slot "},
     {"Prompt Instan (tanpa tahan)", "Instant Prompt (no hold)"},
+    {"HAPUS OBJEK DI ZONA", "REMOVE OBJECTS IN ZONE"},
+    {"Pilih musuh / objek di zona lalu hapus atau netralkan. Perubahan hanya di sisi kamu (lokal); server tidak ikut berubah.", "Pick enemies / objects in the zone, then remove or neutralize them. Changes only apply on your side (local); the server is not affected."},
+    {"Hapus (bisa dipulihkan)", "Remove (restorable)"},
+    {"Netralkan (tanpa tabrak)", "Neutralize (no collision)"},
+    {"CARI OBJEK DI ZONA", "FIND OBJECTS IN ZONE"},
+    {"Atur zona dulu, lalu tekan CARI OBJEK.", "Set a zone first, then press FIND OBJECTS."},
+    {"Tidak ada objek di zona.", "No objects in the zone."},
+    {"Ditemukan ", "Found "},
+    {" jenis. Centang yang mau dihapus.", " types. Tick the ones to remove."},
+    {"HAPUS TERPILIH", "REMOVE SELECTED"},
+    {"PULIHKAN SEMUA", "RESTORE ALL"},
+    {"Auto Hapus (terus-menerus)", "Auto Remove (continuous)"},
+    {"Dihapus / dinetralkan: ", "Removed / neutralized: "},
 }
 table.sort(Loc.PHR, function(a, b) return #a[1] > #b[1] end)
 
@@ -1855,6 +1868,8 @@ do
 
 <b>3. Pengambilan &amp; Setor</b>: pilih <b>Cara ambil</b> (Auto, Dekati saja, Tekan E, Tahan E, Prompt, Sentuh, Klik). <b>SET TITIK SETOR</b> = posisi tempat membawa barang kembali; <b>Setor tiap N barang</b>. <b>Tunggu konfirmasi</b> dan <b>Maks percobaan</b>: barang dicek dulu sudah hilang / terangkat sebelum karakter kembali. <b>Prompt Instan</b> membuat semua ProximityPrompt tanpa tahan (HoldDuration = 0), yang sudah ada maupun yang muncul nanti; nilai aslinya disimpan dan dikembalikan saat dimatikan.
 
+<b>5. Hapus Objek</b> (kartu paling bawah): <b>CARI OBJEK DI ZONA</b>, centang jenis yang mau disingkirkan (musuh NPC ditandai [NPC]), pilih <b>Hapus</b> (bisa dipulihkan) atau <b>Netralkan</b> (tanpa tabrak / sentuh), lalu <b>HAPUS TERPILIH</b> atau nyalakan <b>Auto Hapus</b> untuk musuh yang muncul lagi. Hanya berlaku di sisi kamu (lokal); <b>PULIHKAN SEMUA</b> mengembalikan, dan hub yang ditutup juga mengembalikan.
+
 <b>4. MULAI AUTO ZONA</b>: teleport ke barang terdekat, ambil, cek, setor, lalu barang berikutnya. Bila zona kosong, karakter menunggu di zona agar barang muncul. Berhenti: kembali ke posisi awal + 2 stud.]=], [=[For areas (zones) where items spawn randomly. Flow: zone, scan, pickup &amp; deposit, then run.
 
 <b>1. Set the zone</b> (the PART / BOX / SPHERE / POLYGON buttons choose the saved zone that is active)
@@ -1865,6 +1880,8 @@ do
 <b>2. Zone Contents</b>: <b>SCAN</b> (or Auto Scan) counts the contents per type, e.g. Box x19, Chest x11. Tick the types you want to pick up. Objects larger than the stud limit are ignored so the map / decorations are left out.
 
 <b>3. Pickup &amp; Deposit</b>: choose a <b>Pickup method</b> (Auto, Approach only, Press E, Hold E, Prompt, Touch, Click). <b>SET DEPOSIT POINT</b> = the position where items are brought back to; <b>Deposit every N items</b>. <b>Confirmation wait</b> and <b>Max attempts</b>: each item is checked to be gone / lifted before the character goes back. <b>Instant Prompt</b> makes every ProximityPrompt hold-free (HoldDuration = 0), both existing and newly added ones; the original values are saved and restored when it is turned off.
+
+<b>5. Remove Objects</b> (bottom card): <b>FIND OBJECTS IN ZONE</b>, tick the types to get rid of (NPC enemies are marked [NPC]), choose <b>Remove</b> (restorable) or <b>Neutralize</b> (no collision / touch), then <b>REMOVE SELECTED</b> or turn on <b>Auto Remove</b> for enemies that respawn. Only applies on your side (local); <b>RESTORE ALL</b> brings everything back, and closing the hub restores it too.
 
 <b>4. START AUTO ZONE</b>: teleports to the nearest item, picks it up, checks, deposits, then goes to the next one. If the zone is empty, the character waits in the zone so items can spawn. When it stops: back to the starting position + 2 studs.]=], false)
 
@@ -5849,6 +5866,254 @@ end)()
             vim:SendKeyEvent(false, key, false, game)
         end)
     end
+
+    -- ==================================================
+    -- HAPUS / NETRALKAN OBJEK DI ZONA (musuh NPC, bot, barang)
+    -- Semua perubahan hanya di SISI KAMU (lokal): server tidak ikut berubah, dan karakter pemain tidak pernah disentuh.
+    --   Hapus     : objek dilepas dari workspace secara lokal; induk aslinya disimpan sehingga bisa DIPULIHKAN.
+    --   Netralkan : CanCollide / CanTouch / CanQuery dimatikan (nilai asli disimpan) -> tidak menabrak / menyentuh / melontarkan kamu.
+    -- Anti kebocoran: satu thread hanya saat Auto Hapus ON; catatan dibatasi 400 objek; semuanya dipulihkan saat hub ditutup.
+    -- ==================================================
+    local Rm = {mode = "remove", sel = {}, rows = {}, done = {}, order = {}, auto = false, thread = nil}
+    local RM_CAP = 400
+
+    local CardRem = NewCard(5, "HAPUS OBJEK DI ZONA")
+    local RmNote = MakeLabel(NewRow(CardRem, 1, 38), "Pilih musuh / objek di zona lalu hapus atau netralkan. Perubahan hanya di sisi kamu (lokal); server tidak ikut berubah.", UDim2.new(1, 0, 1, 0), nil, 9)
+    RmNote.Font = Enum.Font.Gotham
+    RmNote.TextWrapped = true
+    RmNote.TextYAlignment = Enum.TextYAlignment.Top
+
+    local RowRmMode = NewRow(CardRem, 2, 22)
+    local rmToggles = {}
+    local function RmModeToggle(key, text, x)
+        rmToggles[key] = ESP.MakeToggle(RowRmMode, text, UDim2.new(0.49, 0, 1, 0), UDim2.new(x, 0, 0, 0), function(on)
+            if not on then return false end            -- harus selalu ada satu mode
+            Rm.mode = key
+            for k, t in pairs(rmToggles) do
+                if k ~= key then t.set(false) end
+            end
+        end)
+    end
+    RmModeToggle("remove", "Hapus (bisa dipulihkan)", 0)
+    RmModeToggle("neutral", "Netralkan (tanpa tabrak)", 0.51)
+    rmToggles.remove.set(true)
+
+    local RmFind = MakeButton(NewRow(CardRem, 3, 24), "CARI OBJEK DI ZONA", BTN_TEAL, UDim2.new(1, 0, 1, 0))
+    local RmInfo = MakeLabel(NewRow(CardRem, 4, 26), "", UDim2.new(1, 0, 1, 0), nil, 9)
+    RmInfo.Font = Enum.Font.Gotham
+    RmInfo.TextWrapped = true
+    RmInfo.TextYAlignment = Enum.TextYAlignment.Top
+    local RmHolder = NewList(CardRem, 5)
+    local RowRmAct = NewRow(CardRem, 6, 24)
+    local RmDo = MakeButton(RowRmAct, "HAPUS TERPILIH", BTN_RED, UDim2.new(0.49, 0, 1, 0))
+    local RmUndo = MakeButton(RowRmAct, "PULIHKAN SEMUA", BTN_GRAY, UDim2.new(0.49, 0, 1, 0), UDim2.new(0.51, 0, 0, 0))
+    local RowRmAuto = NewRow(CardRem, 7, 22)
+    local RmStat = MakeLabel(NewRow(CardRem, 8, 14), "Dihapus / dinetralkan: 0", UDim2.new(1, 0, 1, 0), nil, 9)
+    RmStat.Font = Enum.Font.Gotham
+
+    local function RmIsPlayerModel(m)
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr.Character == m then return true end
+        end
+        return false
+    end
+
+    -- Satu "unit": NPC (model ber-Humanoid yang BUKAN karakter pemain) atau barang (naik selama Model kecil)
+    local function RmUnitOf(part)
+        local a = part.Parent
+        while a and a ~= workspace and a ~= game do
+            if a:IsA("Model") and a:FindFirstChildOfClass("Humanoid") then
+                if RmIsPlayerModel(a) then return nil end
+                return a, true
+            end
+            a = a.Parent
+        end
+        local node = part
+        while true do
+            local parent = node.Parent
+            if not parent or parent == workspace or not parent:IsA("Model") or #parent:GetChildren() > 25 then break end
+            node = parent
+        end
+        return node, false
+    end
+
+    local function RmBuild(parts)
+        local groups, seen = {}, {}
+        for _, p in ipairs(parts) do
+            local unit, npc = RmUnitOf(p)
+            if unit and not seen[unit] and not Rm.done[unit] and unit ~= workspace and not unit:IsA("Terrain") then
+                seen[unit] = true
+                local ok = npc          -- musuh NPC tidak dibatasi ukuran; barang dibatasi agar bagian peta besar tidak ikut
+                if not ok then
+                    local size = unit:IsA("Model") and unit:GetExtentsSize() or unit.Size
+                    ok = math.max(size.X, size.Y, size.Z) <= Z.maxSize
+                end
+                if ok then
+                    local name = Base(unit.Name)
+                    if name == "" then name = unit.Name end
+                    local key = (npc and "[NPC] " or "") .. name
+                    local g = groups[key]
+                    if not g then
+                        g = {count = 0, list = {}}
+                        groups[key] = g
+                    end
+                    g.count += 1
+                    g.list[#g.list + 1] = unit
+                end
+            end
+        end
+        return groups
+    end
+
+    local function RmUpdateStat()
+        RmStat.Text = "Dihapus / dinetralkan: " .. #Rm.order
+    end
+
+    local function RmProcess(unit)
+        if Rm.done[unit] or not unit:IsDescendantOf(workspace) then return end
+        local rec = {mode = Rm.mode}
+        if Rm.mode == "remove" then
+            rec.parent = unit.Parent
+            unit.Parent = nil                           -- lepas secara lokal (bisa dikembalikan)
+        else
+            rec.props = {}
+            local function Fix(part)
+                rec.props[part] = {part.CanCollide, part.CanTouch, part.CanQuery}
+                part.CanCollide = false
+                part.CanTouch = false
+                part.CanQuery = false
+            end
+            if unit:IsA("BasePart") then Fix(unit) end
+            for _, d in ipairs(unit:GetDescendants()) do
+                if d:IsA("BasePart") then Fix(d) end
+            end
+        end
+        Rm.done[unit] = rec
+        Rm.order[#Rm.order + 1] = unit
+        if #Rm.order > RM_CAP then                      -- batas memori: yang paling lama tidak bisa dipulihkan lagi
+            local old = table.remove(Rm.order, 1)
+            Rm.done[old] = nil
+        end
+    end
+
+    local function RmRestore()
+        for _, unit in ipairs(Rm.order) do
+            local rec = Rm.done[unit]
+            if rec then
+                if rec.mode == "remove" then
+                    if rec.parent and rec.parent:IsDescendantOf(game) then
+                        pcall(function() unit.Parent = rec.parent end)
+                    end
+                else
+                    for part, v in pairs(rec.props) do
+                        if part.Parent then
+                            pcall(function()
+                                part.CanCollide = v[1]
+                                part.CanTouch = v[2]
+                                part.CanQuery = v[3]
+                            end)
+                        end
+                    end
+                end
+            end
+        end
+        Rm.done, Rm.order = {}, {}
+        RmUpdateStat()
+    end
+
+    -- Terapkan ke jenis yang dicentang (memindai zona saat ini)
+    local function RmApplySelected()
+        local parts = GatherParts()
+        if not parts then return 0 end
+        local groups = RmBuild(parts)
+        local n = 0
+        for key, g in pairs(groups) do
+            if Rm.sel[key] then
+                for _, unit in ipairs(g.list) do
+                    RmProcess(unit)
+                    n += 1
+                end
+            end
+        end
+        RmUpdateStat()
+        return n
+    end
+
+    local RM_ROWS = 20
+    local function RmRefresh()
+        local parts = GatherParts()
+        if not parts then
+            RmInfo.Text = "Atur zona dulu, lalu tekan CARI OBJEK."
+            return
+        end
+        local groups = RmBuild(parts)
+        local keys, total = {}, 0
+        for k, g in pairs(groups) do
+            keys[#keys + 1] = k
+            total += g.count
+        end
+        table.sort(keys, function(a, b)
+            local ca, cb = groups[a].count, groups[b].count
+            if ca ~= cb then return ca > cb end
+            return a < b
+        end)
+        local shown = {}
+        for i = 1, math.min(RM_ROWS, #keys) do shown[keys[i]] = i end
+        for k, r in pairs(Rm.rows) do
+            if not shown[k] then
+                r.tg.btn:Destroy()
+                Rm.rows[k] = nil
+            end
+        end
+        for k, i in pairs(shown) do
+            local r = Rm.rows[k]
+            if not r then
+                local key = k
+                local tg = ESP.MakeToggle(RmHolder, key, UDim2.new(1, 0, 0, 22), UDim2.new(0, 0, 0, 0), function(on)
+                    Rm.sel[key] = on or nil
+                end)
+                tg.set(Rm.sel[key] == true)
+                r = {tg = tg}
+                Rm.rows[k] = r
+            end
+            r.tg.btn.LayoutOrder = i
+            r.tg.label.Text = k .. "  ×" .. groups[k].count
+        end
+        if #keys == 0 then
+            RmInfo.Text = "Tidak ada objek di zona."
+        else
+            RmInfo.Text = "Ditemukan " .. total .. " objek, " .. #keys .. " jenis. Centang yang mau dihapus."
+        end
+    end
+
+    local function RmStartAuto()
+        if Rm.thread then return end
+        Rm.thread = task.spawn(function()
+            while Rm.auto and not hubDestroyed do
+                if next(Rm.sel) ~= nil then RmApplySelected() end
+                task.wait(0.4)
+            end
+            Rm.thread = nil
+        end)
+    end
+
+    ESP.MakeToggle(RowRmAuto, "Auto Hapus (terus-menerus)", UDim2.new(1, 0, 1, 0), UDim2.new(0, 0, 0, 0), function(on)
+        Rm.auto = on
+        if on then RmStartAuto() end
+    end)
+    RmFind.MouseButton1Click:Connect(RmRefresh)
+    RmDo.MouseButton1Click:Connect(function()
+        RmApplySelected()
+        RmRefresh()
+    end)
+    RmUndo.MouseButton1Click:Connect(function()
+        RmRestore()
+        RmRefresh()
+    end)
+    table.insert(cleanups, function()
+        Rm.auto = false
+        RmRestore()                                      -- hub ditutup: kembalikan semuanya
+    end)
 
     -- ===== PROMPT INSTAN =====
     -- Semua ProximityPrompt di workspace dibuat HoldDuration = 0 (tanpa tahan), baik yang sudah ada maupun yang muncul nanti.
